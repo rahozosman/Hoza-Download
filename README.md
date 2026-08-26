@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 <div align="center">
 
 <img src="assets/icon/hoza_mark.png" alt="Hoza Download" width="96" />
