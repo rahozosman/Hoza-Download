@@ -96,6 +96,13 @@ GoogleService-Info.plist
 /*.psd
 /*.ai
 
+# Private working notes for the AI assistant — not part of the product.
+/HOZA_DOWNLOAD_CLAUDE_CODE_RULES.md
+/HOZA_DOWNLOAD_CLAUDE_CODE_RULES_02_ENGINEERING.md
+/HOZA_DOWNLOAD_CLAUDE_CODE_RULES*.md
+/CLAUDE.md
+/.claude/
+
 # Local notes and machine-specific tooling output
 /tool/output/
 /tmp/
