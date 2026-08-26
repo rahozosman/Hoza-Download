@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shown on the native card the share window paints while Dart brings
+         the download sheet up, so a share is never met with a blank screen. -->
+    <string name="share_sheet_opening">Opening Hoza Download…</string>
+</resources>

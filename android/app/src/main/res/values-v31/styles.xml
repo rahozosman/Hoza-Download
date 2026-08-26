@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ draws its own splash from these attributes. Matching them to the
+  app background means the system splash, the Flutter splash and the shell are
+  one continuous surface with no flash between them.
+-->
+<resources>
+    <style name="LaunchTheme" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowSplashScreenBackground">@color/hozaLaunch</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <!-- The icon sits on its own light tile rather than on the launch
+             colour: the mark's outlines are navy, and against the night
+             scheme's midnight they would disappear. This is the same tile
+             HozaLogo draws in the Flutter launch screen that follows. -->
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/hozaMarkPlate</item>
+        <item name="android:windowBackground">@drawable/launch_background</item>
+    </style>
+    <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">?android:colorBackground</item>
+    </style>
+    <!-- The share window must never show a splash: it is a sheet over another
+         app, so the system splash is reduced to a transparent, icon-less one. -->
+    <style name="ShareSheetTheme" parent="@android:style/Theme.Translucent.NoTitleBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:windowSplashScreenBackground">@android:color/transparent</item>
+    </style>
+</resources>

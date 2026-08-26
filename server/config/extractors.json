@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "platforms": {
+    "tiktok": { "enabled": true },
+    "instagram": { "enabled": true },
+    "facebook": {
+      "enabled": true,
+      "message": "Facebook is not reachable from your region right now. Hoza will keep trying."
+    },
+    "youtube": { "enabled": true }
+  },
+  "extractors": {
+    "tiktok": [
+      { "pattern": "\"playAddr\"\\s*:\\s*\"([^\"]+)\"", "label": "Original" },
+      { "pattern": "\"downloadAddr\"\\s*:\\s*\"([^\"]+)\"", "label": "With watermark" },
+      { "pattern": "\"PlayAddr\"\\s*:\\s*\\{[^{}]{0,300}?\"UrlList\"\\s*:\\s*\\[\\s*\"([^\"]+)\"", "label": "Alternate" }
+    ],
+    "instagram": [
+      { "pattern": "\"video_url\\\\?\"\\s*:\\s*\\\\?\"([^\"]+?)\\\\?\"", "label": "Original" },
+      { "pattern": "\"video_versions\".{0,200}?\"url\"\\s*:\\s*\"([^\"]+)\"", "label": "Original" }
+    ],
+    "facebook": [
+      { "pattern": "\"browser_native_hd_url\"\\s*:\\s*\"([^\"]+)\"", "label": "HD" },
+      { "pattern": "\"playable_url_quality_hd\"\\s*:\\s*\"([^\"]+)\"", "label": "HD" },
+      { "pattern": "\"hd_src\"\\s*:\\s*\"([^\"]+)\"", "label": "HD" },
+      { "pattern": "\"browser_native_sd_url\"\\s*:\\s*\"([^\"]+)\"", "label": "SD" },
+      { "pattern": "\"playable_url\"\\s*:\\s*\"([^\"]+)\"", "label": "SD" },
+      { "pattern": "\"sd_src\"\\s*:\\s*\"([^\"]+)\"", "label": "SD" }
+    ]
+  },
+  "pingUrl": null,
+  "telemetryUrl": null,
+  "resolveUrl": null,
+  "minAppVersion": "1.0.0",
+  "updateMessage": null
+}

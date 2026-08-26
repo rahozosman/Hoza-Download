@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The colour the native launch window paints before Flutter's first frame.
+         It MUST equal HozaPalette.dark.background in
+         lib/app/theme/app_colors.dart, or every cold start shows a visible step
+         from one near-black to another.
+
+         A comment alone did not hold this: the palette was retuned and these
+         two drifted apart. Verified now by tool/check_launch_color.dart, which
+         reads both files and fails on a mismatch. -->
+    <color name="hozaMidnight">#FF080E1C</color>
+
+    <!-- HozaPalette.light.background: what the launch window paints when the
+         system is in its day scheme, so a light-themed app does not open with
+         a dark flash. The night qualifier swaps this for hozaMidnight. -->
+    <color name="hozaDawn">#FFEAF2FD</color>
+
+    <!-- The launch colour actually used, chosen per day/night by the resource
+         system so every style below follows the scheme without a copy. -->
+    <color name="hozaLaunch">@color/hozaDawn</color>
+
+    <!-- The ground the mark is drawn against. It MUST equal HozaLogo._plate in
+         lib/shared/widgets/hoza_logo.dart, so the tile Android draws on the
+         system splash and the tile Flutter draws a moment later are the same
+         tile. Deliberately not swapped by the night qualifier: the artwork's
+         outlines are navy, and on a dark ground it loses its edges. -->
+    <color name="hozaMarkPlate">#FFF4F7FD</color>
+    <color name="ic_launcher_background">#0C1832</color>
+</resources>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- At night the launch window is the app's own midnight, see values/colors.xml. -->
+    <color name="hozaLaunch">@color/hozaMidnight</color>
+</resources>

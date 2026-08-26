@@ -1,0 +1,16 @@
+# Copy to android/key.properties and fill in. That file is git-ignored.
+#
+# Create the keystore once, and keep it somewhere safe — losing it means you can
+# never update the app on Play:
+#
+#   keytool -genkey -v -keystore hoza-release.jks \
+#     -keyalg RSA -keysize 2048 -validity 10000 -alias hoza
+#
+# Without android/key.properties the release build falls back to the debug key
+# so `flutter run --release` still works. A build signed that way is for local
+# testing only and must not be published.
+
+storeFile=/absolute/path/to/hoza-release.jks
+storePassword=
+keyAlias=hoza
+keyPassword=

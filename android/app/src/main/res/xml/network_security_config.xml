@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hoza downloads from links the user supplies, and some legitimate media hosts
+  still serve plain http. Cleartext is therefore permitted, but only that:
+  the app trusts the system CA store and nothing else, adds no user-installed
+  certificate exemption, and disables no certificate validation anywhere.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

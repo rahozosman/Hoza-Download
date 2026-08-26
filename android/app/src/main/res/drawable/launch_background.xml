@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The window Android paints before the Flutter engine attaches, on API levels
+  below 31. It shows the same mark, on the same ground, that the Flutter
+  launch screen picks up a moment later — so the handover is one continuous
+  screen rather than a colour that suddenly grows an icon.
+
+  The bitmap lives in drawable-xxhdpi, which is what sets its size: Android
+  treats it as a 3x asset and scales it per device, landing at a mark of
+  roughly 170dp on any screen.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/hozaLaunch" />
+    <item>
+        <bitmap
+            android:gravity="center"
+            android:src="@drawable/launch_mark" />
+    </item>
+</layer-list>
