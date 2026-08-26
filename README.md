@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 <div align="center">
 
 <img src="assets/icon/hoza_mark.png" alt="Hoza Download" width="96" />
@@ -267,3 +268,7 @@ Copyright © 2026 Rahoz Osman. All rights reserved.
 
 No license is granted for redistribution or commercial use. Open an issue if
 you would like to discuss usage.
+=======
+# Hoza-Download
+Hoza Download: one share button to save videos, audio and photos from TikTok, Instagram, Facebook, YouTube and direct links. Choose the quality, download in the background, pause and resume anytime, and find every file in Download/Hoza Download. Free, no account, no ads.
+>>>>>>> b2eb04aaa73fa9e043ecf11b49f7da8649131b3a
