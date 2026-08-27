@@ -7,7 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_dimens.dart';
 import '../../../app/theme/app_motion.dart';
-import '../../../app/theme/app_theme.dart';
 import '../../../app/theme/app_typography.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../data/models/media_option.dart';
@@ -46,12 +45,10 @@ Future<void> showLinkSheet(
     // qualities or photos runs long.
     expandable: true,
     initialFraction: 0.65,
-    // The sheet has its own light scheme, whatever the app is set to: it
-    // opens over other apps and has to be easy on the eyes on its own.
-    builder: (_) => Theme(
-      data: AppTheme.sheet,
-      child: LinkSheet(url: url, overlay: overlay),
-    ),
+    // The sheet wears the app's own theme — dark when the app is dark — so
+    // what slides up over another app is recognisably Hoza, in the mode the
+    // user chose for it.
+    builder: (_) => LinkSheet(url: url, overlay: overlay),
   );
 }
 
@@ -307,9 +304,12 @@ class _LinkSheetState extends ConsumerState<LinkSheet> {
               ),
               // Both states hang from the top while the sheet resizes under
               // them; centred, the outgoing one would drift as it faded.
+              // Once a download is running, only the download stage is laid
+              // out: the chooser it replaced must never linger underneath it
+              // as a second set of tiles and buttons.
               layoutBuilder: (current, previous) => Stack(
                 alignment: Alignment.topCenter,
-                children: [...previous, ?current],
+                children: [if (_downloadId == null) ...previous, ?current],
               ),
               child: _stage(snapshot, choice),
             ),

@@ -111,7 +111,25 @@ class _ShareLinkListenerState extends ConsumerState<ShareLinkListener> {
     super.dispose();
   }
 
+  /// The link most recently put on screen, and when. The platform can hand
+  /// the same share over twice — once as the launching intent, once over the
+  /// stream — and two arrivals of one link must open one sheet, not two
+  /// stacked on top of each other.
+  Uri? _lastPresented;
+  DateTime? _lastPresentedAt;
+
+  static const Duration _duplicateWindow = Duration(seconds: 3);
+
   Future<void> _present(Uri url) async {
+    final now = DateTime.now();
+    if (url == _lastPresented &&
+        _lastPresentedAt != null &&
+        now.difference(_lastPresentedAt!) < _duplicateWindow) {
+      return;
+    }
+    _lastPresented = url;
+    _lastPresentedAt = now;
+
     // Written before anything else can go wrong, cleared once a sheet shows
     // it; a process killed in between finds it here on the next launch.
     unawaited(_pendingStore?.remember(url));
@@ -119,7 +137,11 @@ class _ShareLinkListenerState extends ConsumerState<ShareLinkListener> {
     final host = await ref.read(shareSurfaceProvider).currentHost();
     if (!mounted) return;
 
-    if (host == ShareHost.app) {
+    // While the floating share window has the route up, every link belongs
+    // to it — even if the platform still reports the app as host for a
+    // moment, which would otherwise open a second sheet in the same
+    // navigator.
+    if (host == ShareHost.app && !ShareOverlayScreen.isMounted) {
       await _presentInApp(url);
       return;
     }
