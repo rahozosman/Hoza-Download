@@ -107,9 +107,14 @@ class _DownloadProgressBarState extends State<DownloadProgressBar>
       return;
     }
     // Re-timed only on a real change of pace, so the band does not stutter
-    // every time a sample wobbles.
-    final current = _sweep.duration ?? period;
-    if ((current - period).abs() > const Duration(milliseconds: 180)) {
+    // every time a sample wobbles. A controller that has never been timed —
+    // the bar is built before the first speed sample, with no period at all
+    // — takes the first pace it is given: repeat() with no duration throws,
+    // mid-build, and leaves the block it was updating behind as a frozen
+    // second copy under the live one.
+    final current = _sweep.duration;
+    if (current == null ||
+        (current - period).abs() > const Duration(milliseconds: 180)) {
       _sweep.duration = period;
     }
     if (!_sweep.isAnimating) _sweep.repeat();
