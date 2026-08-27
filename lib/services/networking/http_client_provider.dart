@@ -2,8 +2,6 @@ import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/constants/app_info.dart';
-
 /// Timeouts applied to every outbound request.
 ///
 /// Nothing in the app may wait indefinitely: a link check and a stalled
@@ -28,7 +26,13 @@ final httpClientProvider = Provider<HttpClient>((ref) {
   final client = HttpClient()
     ..connectionTimeout = NetworkTimeouts.connect
     ..idleTimeout = NetworkTimeouts.idle
-    ..userAgent = '${AppInfo.name.replaceAll(' ', '')}/${AppInfo.version}'
+    // No default agent: every request sets its own. With a default in place,
+    // Dart's redirect follower keeps the *default* on the redirected hop and
+    // drops the agent the request asked for — so a page fetched as a link
+    // crawler arrived at facebook.com's regional redirect as "HozaDownload",
+    // and was refused with a 400. Requests that want the app's own agent use
+    // [RequestProfiles] or say so themselves.
+    ..userAgent = null
     // Media is already compressed, and transparent decompression would make
     // Content-Length disagree with the bytes actually written to disk.
     ..autoUncompress = false;

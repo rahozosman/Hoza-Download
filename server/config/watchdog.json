@@ -1,0 +1,124 @@
+{
+  "_comment": "Read by tool/watchdog/watchdog_test.dart. links: public posts with a video, per platform. candidates: every pattern the platform has been known to use, best quality first; generic: last resorts tried for every platform. A candidate is adopted only after the address it finds was fetched and served media.",
+  "links": {
+    "tiktok": [
+      "https://www.tiktok.com/@scout2015/video/6718335390845095173",
+      "https://www.tiktok.com/@patroxofficial/video/6742501081818877190"
+    ],
+    "instagram": [
+      "https://www.instagram.com/p/BA-pQFBG8HZ/",
+      "https://www.instagram.com/p/aye83DjauH/",
+      "https://www.instagram.com/reel/CDUMkliABpa/"
+    ],
+    "facebook": [
+      "https://www.facebook.com/facebook/videos/10153231379946729/",
+      "https://www.facebook.com/WatchESL/videos/359649331226507/"
+    ]
+  },
+  "candidates": {
+    "tiktok": [
+      {
+        "pattern": "\"playAddr\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "Original"
+      },
+      {
+        "pattern": "\"playAddrH264\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "Original"
+      },
+      {
+        "pattern": "\"PlayAddr\"\\s*:\\s*\\{[^{}]{0,300}?\"UrlList\"\\s*:\\s*\\[\\s*\"([^\"]+)\"",
+        "label": "Alternate"
+      },
+      {
+        "pattern": "\"play_addr\"\\s*:\\s*\\{[^{}]{0,400}?\"url_list\"\\s*:\\s*\\[\\s*\"([^\"]+)\"",
+        "label": "Alternate"
+      },
+      {
+        "pattern": "\"downloadAddr\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "With watermark"
+      },
+      {
+        "pattern": "\"download_addr\"\\s*:\\s*\\{[^{}]{0,400}?\"url_list\"\\s*:\\s*\\[\\s*\"([^\"]+)\"",
+        "label": "With watermark"
+      }
+    ],
+    "instagram": [
+      {
+        "pattern": "\"video_url\\?\"\\s*:\\s*\\?\"([^\"]+?)\\?\"",
+        "label": "Original"
+      },
+      {
+        "pattern": "\"video_versions\".{0,200}?\"url\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "Original"
+      },
+      {
+        "pattern": "\"video_url\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "Original"
+      },
+      {
+        "pattern": "\"contentUrl\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "Original"
+      },
+      {
+        "pattern": "\"video_dash_manifest\".{0,2000}?BaseURL>([^<]+)<",
+        "label": "Original"
+      }
+    ],
+    "facebook": [
+      {
+        "pattern": "\"browser_native_hd_url\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "HD"
+      },
+      {
+        "pattern": "\"playable_url_quality_hd\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "HD"
+      },
+      {
+        "pattern": "\"hd_src_no_ratelimit\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "HD"
+      },
+      {
+        "pattern": "\"hd_src\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "HD"
+      },
+      {
+        "pattern": "\"browser_native_sd_url\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "SD"
+      },
+      {
+        "pattern": "\"playable_url\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "SD"
+      },
+      {
+        "pattern": "\"sd_src_no_ratelimit\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "SD"
+      },
+      {
+        "pattern": "\"sd_src\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "SD"
+      },
+      {
+        "pattern": "\"progressive_url\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "Original"
+      },
+      {
+        "pattern": "\"video_url\"\\s*:\\s*\"([^\"]+)\"",
+        "label": "Original"
+      }
+    ]
+  },
+  "generic": [
+    {
+      "pattern": "<meta\\s+property=\"og:video(?::secure_url|:url)?\"\\s+content=\"([^\"]+)\"",
+      "label": "Original"
+    },
+    {
+      "pattern": "<meta\\s+content=\"([^\"]+)\"\\s+property=\"og:video(?::secure_url|:url)?\"",
+      "label": "Original"
+    },
+    {
+      "pattern": "\"(https?:\\?/\\?/[^\"]{20,}?\\.mp4[^\"]*?)\"",
+      "label": "Original"
+    }
+  ]
+}

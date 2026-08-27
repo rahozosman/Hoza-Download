@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data' show BytesBuilder;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sqflite/sqflite.dart';
@@ -287,6 +288,14 @@ class RemoteConfigController extends Notifier<RemoteConfig> {
       final client = ref.read(httpClientProvider);
       final request = await client.getUrl(url).timeout(_timeout);
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      request.headers.set(
+        HttpHeaders.userAgentHeader,
+        '${AppInfo.name.replaceAll(' ', '')}/${AppInfo.version}',
+      );
+      // The shared client leaves bodies compressed — right for media, wrong
+      // for a text file. Ask for it plain, and unpack it below if the host
+      // compresses anyway, as GitHub does; decoding gzip as text throws.
+      request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
       if (etag != null) {
         request.headers.set(HttpHeaders.ifNoneMatchHeader, etag);
       }
@@ -303,10 +312,15 @@ class RemoteConfigController extends Notifier<RemoteConfig> {
         return;
       }
 
-      final body = await response
-          .transform(utf8.decoder)
-          .join()
-          .timeout(_timeout);
+      final builder = BytesBuilder(copy: false);
+      await response.forEach(builder.add).timeout(_timeout);
+      List<int> bytes = builder.takeBytes();
+      if (bytes.length > 256 * 1024) return;
+      final encoding =
+          (response.headers.value(HttpHeaders.contentEncodingHeader) ?? '')
+              .toLowerCase();
+      if (encoding.contains('gzip')) bytes = gzip.decode(bytes);
+      final body = utf8.decode(bytes);
       if (body.length > 256 * 1024) return;
       if (!_applyBody(body, from: 'network')) return;
 
@@ -321,6 +335,9 @@ class RemoteConfigController extends Notifier<RemoteConfig> {
       AppLog.warn('Remote config', 'timed out');
     } on IOException catch (error) {
       AppLog.warn('Remote config', error.runtimeType);
+    } on FormatException {
+      // Not text, or not the compression it claimed: the previous copy stays.
+      AppLog.warn('Remote config', 'unreadable body');
     }
   }
 

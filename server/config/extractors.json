@@ -1,12 +1,9 @@
 {
-  "version": 1,
+  "version": 2,
   "platforms": {
     "tiktok": { "enabled": true },
     "instagram": { "enabled": true },
-    "facebook": {
-      "enabled": true,
-      "message": "Facebook is not reachable from your region right now. Hoza will keep trying."
-    },
+    "facebook": { "enabled": true },
     "youtube": { "enabled": true }
   },
   "extractors": {

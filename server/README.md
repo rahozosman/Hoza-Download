@@ -97,3 +97,47 @@ you add fields, keep that promise.
   `RemoteConfigController._applyBody` before adopting the body.
 - `/resolve` is rate-limited per IP (`HOZA_RESOLVE_PER_MINUTE`, default 6).
   Put an API key on it before exposing it publicly.
+
+## The extractor watchdog (automatic detection and repair)
+
+`.github/workflows/extractor-watchdog.yml` runs `tool/watchdog/watchdog_test.dart`
+once a day and on demand (Actions → *Extractor watchdog* → *Run workflow*).
+It needs **Settings → Actions → General → Workflow permissions → Read and
+write** once, so it can commit and open issues.
+
+What one run does, per platform, with the app's own resolver code:
+
+1. Resolves the public posts listed in `config/watchdog.json` (`links`).
+   At least one must yield a downloadable video.
+2. Checks that the patterns in `config/extractors.json` still find that video
+   in the page — a post can survive on the Open Graph fallback while the
+   patterns quietly rot.
+3. If either check fails, tries every pattern in `config/watchdog.json`
+   (`candidates` for the platform, then `generic`) against the pages it just
+   fetched. A pattern is adopted **only** if the address it finds is fetched
+   and actually serves media. Adopted patterns go first, the old ones stay
+   behind them as fallbacks, `version` is bumped, and the workflow commits
+   `config/extractors.json`. Phones pick it up through the remote config.
+4. If nothing works, it opens (or updates) a GitHub issue labelled `watchdog`
+   with the report and the pages it read attached to the run, and the run
+   fails. The issue is closed automatically once the platform works again.
+
+The report is in the run's summary and the `watchdog-report` artifact.
+
+Maintaining it:
+
+- **Test links go stale** (posts get deleted). Keep two or three public posts
+  per platform in `links`; a platform with no working link reads as broken.
+- **Teach it new keys**: when a platform is repaired by hand, add the pattern
+  to `candidates` too, so the next rename is handled without you.
+- **Drill**: run the workflow with `simulate_break` set to a platform. The
+  patterns are replaced with a broken one and the repair has to find its way
+  back. Nothing is committed in a drill; the would-be config is in the
+  artifact as `extractors.simulated.json`.
+- Locally: `flutter test tool/watchdog/watchdog_test.dart`
+  (add `--dart-define=WATCHDOG_SIMULATE_BREAK=facebook` for a drill, or
+  `--dart-define=WATCHDOG_HEAL=false` to report only).
+
+What it cannot do: a platform that moves its media behind a new API call, a
+token, or a sign-in is a code change, not a pattern. The issue it opens is
+the signal for that.

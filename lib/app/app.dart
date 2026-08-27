@@ -5,6 +5,7 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 import '../core/constants/app_info.dart';
 import '../data/providers/settings_provider.dart';
 import '../features/share/presentation/share_link_listener.dart';
+import '../services/config/remote_config.dart';
 import 'router.dart';
 import 'theme/app_motion.dart';
 import 'theme/app_theme.dart';
@@ -28,6 +29,11 @@ class HozaApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(themeModeProvider);
+    // Woken here, at the root, so the remote config is fetched as the app
+    // starts rather than on the first link lookup: the patterns a share needs
+    // should already be in place by the time the sheet asks for them. Listened
+    // to, not watched — a fresh config must not rebuild the whole tree.
+    ref.listen(remoteConfigProvider, (_, _) {});
 
     return MaterialApp(
       title: AppInfo.name,

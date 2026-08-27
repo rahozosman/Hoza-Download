@@ -1,0 +1,128 @@
+# Extractor watchdog — see tool/watchdog/watchdog_test.dart and server/README.md.
+#
+# Once a day (and on demand) it resolves a public post per platform with the
+# app's own resolver code. A platform whose patterns stopped working is
+# repaired from the candidate library, the repaired server/config/extractors.json
+# is committed, and phones pick it up through the remote config. A platform
+# that could not be repaired opens (or updates) a GitHub issue, and the run
+# fails so it shows red.
+#
+# Needs: Settings → Actions → General → Workflow permissions → "Read and write".
+
+name: Extractor watchdog
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      simulate_break:
+        description: 'Drill: platform to break on purpose (tiktok, instagram, facebook). Nothing is committed.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: extractor-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Run the watchdog
+        id: watchdog
+        continue-on-error: true
+        run: >
+          flutter test tool/watchdog/watchdog_test.dart
+          --dart-define=WATCHDOG_SIMULATE_BREAK=${{ inputs.simulate_break }}
+          --reporter expanded
+
+      - name: Keep the report and the pages it read
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: watchdog-report
+          path: build/watchdog
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Read the verdict
+        id: verdict
+        if: always()
+        run: |
+          if [ ! -f build/watchdog/report.json ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "broken=crash" >> "$GITHUB_OUTPUT"
+            echo "summary=The watchdog did not produce a report; see the job log." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=$(jq -r '.configChanged' build/watchdog/report.json)" >> "$GITHUB_OUTPUT"
+          echo "broken=$(jq -r '[.platforms[] | select(.status == "broken") | .platform] | join(",")' build/watchdog/report.json)" >> "$GITHUB_OUTPUT"
+          {
+            echo 'summary<<EOF'
+            cat build/watchdog/report.md
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          cat build/watchdog/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit the repaired config
+        if: steps.verdict.outputs.changed == 'true' && inputs.simulate_break == ''
+        run: |
+          git config user.name "hoza-watchdog[bot]"
+          git config user.email "hoza-watchdog@users.noreply.github.com"
+          git add server/config/extractors.json
+          git commit -m "watchdog: repair extractor patterns (config v$(jq -r '.version' build/watchdog/report.json))" \
+            -m "$(jq -r '[.platforms[] | select(.status == "repaired") | .platform] | join(", ")' build/watchdog/report.json) repaired automatically. Every adopted pattern was verified by fetching the address it found."
+          git push
+
+      - name: Open or update the issue
+        if: always() && steps.verdict.outputs.broken != '' && inputs.simulate_break == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BROKEN: ${{ steps.verdict.outputs.broken }}
+          SUMMARY: ${{ steps.verdict.outputs.summary }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Watchdog: downloads broken for $BROKEN"
+          body=$(printf '%s\n\n%s\n\n%s\n\n%s' \
+            "The daily watchdog could not resolve a public post, and no candidate pattern repaired it. A code change is needed." \
+            "$SUMMARY" \
+            "Pages the watchdog read are attached to the run as the \`watchdog-report\` artifact: $RUN_URL" \
+            "This issue is updated by every failing run and closed automatically once the platform works again.")
+          existing=$(gh issue list --label watchdog --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$title" --body "$body"
+            gh issue comment "$existing" --body "Still broken on $(date -u +%F): $BROKEN — $RUN_URL"
+          else
+            gh label create watchdog --description "Opened by the extractor watchdog" --color D93F0B 2>/dev/null || true
+            gh issue create --title "$title" --body "$body" --label watchdog
+          fi
+
+      - name: Close the issue once everything works
+        if: always() && steps.verdict.outputs.broken == '' && inputs.simulate_break == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for number in $(gh issue list --label watchdog --state open --json number --jq '.[].number'); do
+            gh issue close "$number" --comment "All platforms resolve again as of $(date -u +%F)."
+          done
+
+      - name: Fail if something is broken
+        if: steps.verdict.outputs.broken != ''
+        run: |
+          echo "Broken and not repaired: ${{ steps.verdict.outputs.broken }}"
+          exit 1

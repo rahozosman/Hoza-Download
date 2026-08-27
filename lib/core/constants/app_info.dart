@@ -16,7 +16,8 @@ abstract final class AppInfo {
   /// extractor patterns, probe and telemetry addresses. Must be https. Leave
   /// empty to run entirely on the built-in defaults (no network request is
   /// made). See `server/README.md` for the file's shape and hosting options.
-  static const String remoteConfigUrl = '';
+  static const String remoteConfigUrl =
+      'https://raw.githubusercontent.com/rahozosman/Hoza-Download/main/server/config/extractors.json';
 
   /// Where finished downloads are written, in the user's shared storage. The
   /// platform reports the same path back for the Settings row; this constant is
