@@ -284,36 +284,47 @@ class _LinkSheetState extends ConsumerState<LinkSheet> {
           // Checking, choosing and downloading are three states of one
           // surface, not three screens. The sheet grows to each in turn while
           // the old state fades out under the new one, so nothing ever cuts.
-          child: AnimatedSize(
-            duration: context.motion(Motion.slow),
-            curve: Motion.emphasized,
-            alignment: Alignment.topCenter,
-            child: AnimatedSwitcher(
-              duration: context.motion(Motion.base),
-              switchInCurve: Motion.emphasized,
-              switchOutCurve: Motion.exit,
-              transitionBuilder: (child, animation) => FadeTransition(
-                opacity: animation,
-                child: SlideTransition(
-                  position: Tween<Offset>(
-                    begin: const Offset(0, 0.03),
-                    end: Offset.zero,
-                  ).animate(animation),
-                  child: child,
+          //
+          // Once a download is running the switcher is left behind entirely:
+          // the download stage is rendered on its own. A cross-fade would
+          // otherwise keep the frame it swapped in — a progress block frozen
+          // at its first percent — alive underneath the live one, which read
+          // as a second, stuck download.
+          child: _downloadId != null
+              ? AnimatedSize(
+                  duration: context.motion(Motion.slow),
+                  curve: Motion.emphasized,
+                  alignment: Alignment.topCenter,
+                  child: _stage(snapshot, choice),
+                )
+              : AnimatedSize(
+                  duration: context.motion(Motion.slow),
+                  curve: Motion.emphasized,
+                  alignment: Alignment.topCenter,
+                  child: AnimatedSwitcher(
+                    duration: context.motion(Motion.base),
+                    switchInCurve: Motion.emphasized,
+                    switchOutCurve: Motion.exit,
+                    transitionBuilder: (child, animation) => FadeTransition(
+                      opacity: animation,
+                      child: SlideTransition(
+                        position: Tween<Offset>(
+                          begin: const Offset(0, 0.03),
+                          end: Offset.zero,
+                        ).animate(animation),
+                        child: child,
+                      ),
+                    ),
+                    // Both states hang from the top while the sheet resizes
+                    // under them; centred, the outgoing one would drift as it
+                    // faded.
+                    layoutBuilder: (current, previous) => Stack(
+                      alignment: Alignment.topCenter,
+                      children: [...previous, ?current],
+                    ),
+                    child: _stage(snapshot, choice),
+                  ),
                 ),
-              ),
-              // Both states hang from the top while the sheet resizes under
-              // them; centred, the outgoing one would drift as it faded.
-              // Once a download is running, only the download stage is laid
-              // out: the chooser it replaced must never linger underneath it
-              // as a second set of tiles and buttons.
-              layoutBuilder: (current, previous) => Stack(
-                alignment: Alignment.topCenter,
-                children: [if (_downloadId == null) ...previous, ?current],
-              ),
-              child: _stage(snapshot, choice),
-            ),
-          ),
         );
       },
     );
