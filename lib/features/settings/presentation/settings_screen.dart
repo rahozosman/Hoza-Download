@@ -7,7 +7,6 @@ import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_dimens.dart';
 import '../../../app/theme/app_motion.dart';
 import '../../../app/theme/app_typography.dart';
-import '../../../app/theme/status_visuals.dart';
 import '../../../core/constants/app_info.dart';
 import '../../../data/models/app_settings.dart';
 import '../../../data/models/media_option.dart';
@@ -20,6 +19,7 @@ import '../../../shared/widgets/sheen_text.dart';
 import '../../downloader/data/shared_download_storage.dart';
 import '../../downloads/presentation/widgets/download_dialogs.dart';
 import '../../shell/presentation/app_shell.dart';
+import 'widgets/media_type_picker.dart';
 import 'widgets/reset_flow.dart';
 import 'widgets/settings_widgets.dart';
 import 'widgets/storage_panel.dart';
@@ -76,31 +76,12 @@ class SettingsScreen extends ConsumerWidget {
                 child: SettingsGroup(
                   title: 'Downloads',
                   children: [
-                    // Two options, both nameable in a word: opening a sheet to
-                    // change one of them would be more ceremony than the
-                    // choice deserves. Same glyphs and wording the download
-                    // sheet uses, so the preference and the thing it presets
-                    // are recognisably the same pair.
-                    SettingsSegmentedRow<MediaType>(
-                      icon: Icons.tune_rounded,
-                      title: 'Default type',
-                      subtitle: 'What a link opens on',
+                    // The type a link opens on is the download preference
+                    // people actually touch, so it shows itself: two cards
+                    // painted in the hue each type carries everywhere else,
+                    // with the live one filled and ticked.
+                    MediaTypePicker(
                       value: settings.defaultMediaType,
-                      segments: [
-                        // Photos only exist for posts that carry them, so a
-                        // link opens on video or audio and offers Image
-                        // alongside when the post has any.
-                        for (final type in MediaType.values)
-                          if (type != MediaType.image)
-                            SettingsSegment<MediaType>(
-                              value: type,
-                              label: MediaVisuals.of(
-                                type,
-                                context.colors,
-                              ).label,
-                              icon: MediaVisuals.of(type, context.colors).icon,
-                            ),
-                      ],
                       onSelected: controller.setDefaultMediaType,
                     ),
                     SettingsChoiceRow<MediaFormat>(

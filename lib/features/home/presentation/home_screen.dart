@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_dimens.dart';
 import '../../../app/theme/app_motion.dart';
 import '../../../shared/widgets/connection_banner.dart';
@@ -66,11 +65,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// The masthead and the primary action, lit by one pool of light.
+/// The masthead and the primary action, drawn as one block.
 ///
-/// Drawn as a single block rather than two stacked cards: the light behind
-/// them belongs to both, so the eye reads "this is where Home starts and this
-/// is what it wants you to do" as one idea instead of two.
+/// Nothing is painted behind them: the page's own background carries the
+/// header and the paste card, so the top of Home reads as one column rather
+/// than a lit rectangle sitting on it.
 class _HeroBlock extends StatelessWidget {
   const _HeroBlock({required this.controller});
 
@@ -78,44 +77,19 @@ class _HeroBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final palette = context.colors;
-
-    return Stack(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Positioned.fill(
-          child: IgnorePointer(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                // Offset from the page's own top-left wash rather than sitting
-                // on top of it, and kept faint: two lights stacked in one
-                // corner stop reading as light and start reading as a stain.
-                gradient: RadialGradient(
-                  center: const Alignment(0.15, -0.7),
-                  radius: 1.15,
-                  colors: [
-                    palette.accentAlt.withValues(alpha: 0.09),
-                    palette.accentAlt.withValues(alpha: 0),
-                  ],
-                ),
-              ),
-            ),
+        ScrollReveal(
+          child: _ParallaxHeader(
+            controller: controller,
+            child: const HomeHeader(),
           ),
         ),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            ScrollReveal(
-              child: _ParallaxHeader(
-                controller: controller,
-                child: const HomeHeader(),
-              ),
-            ),
-            const SizedBox(height: Gap.sm),
-            const ConnectionBanner(),
-            const SizedBox(height: Gap.lg),
-            const ScrollReveal(index: 1, child: PasteLinkCard()),
-          ],
-        ),
+        const SizedBox(height: Gap.sm),
+        const ConnectionBanner(),
+        const SizedBox(height: Gap.lg),
+        const ScrollReveal(index: 1, child: PasteLinkCard()),
       ],
     );
   }

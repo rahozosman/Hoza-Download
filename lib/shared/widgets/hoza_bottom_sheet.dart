@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
@@ -17,7 +18,10 @@ import 'sheen_text.dart';
 /// hairline travelling along the one edge that is actually on screen, and a
 /// title that breathes. Sheets size themselves to their content and stay
 /// scrollable when the keyboard or a long body would otherwise overflow.
-class HozaSheet extends StatelessWidget {
+///
+/// The sheet also redraws itself a few times a second; see [_refreshInterval]
+/// for why.
+class HozaSheet extends StatefulWidget {
   const HozaSheet({
     super.key,
     required this.child,
@@ -59,19 +63,68 @@ class HozaSheet extends StatelessWidget {
   /// How far the accent wash reaches down from the top rim.
   static const double _washHeight = 200;
 
+  /// How often the sheet forces itself to be painted again in full.
+  ///
+  /// On Android the renderer only redraws what it believes has changed since
+  /// the frame already in the screen buffer. When the sheet moves — pulled
+  /// down a little and let go, so it snaps back up — that bookkeeping has
+  /// been seen to miss the ground the sheet vacated: the previous frame's
+  /// pixels stay put, inside the sheet's own fill, below the live content.
+  /// While a download runs that reads as a second copy of the progress
+  /// block, frozen at the percent it had when the sheet moved, and nothing
+  /// ever paints over it because nothing below the live block changes.
+  ///
+  /// So the sheet changes, on purpose and invisibly: every tick the fill is
+  /// nudged by one 8-bit step of alpha, which makes the whole sheet rectangle
+  /// count as changed and be drawn afresh, stale pixels and all, within a
+  /// quarter of a second of whatever left them. One sheet a few times a
+  /// second is nothing to draw; the ghost it removes was the one thing the
+  /// user could not get rid of.
+  static const Duration _refreshInterval = Duration(milliseconds: 250);
+
+  @override
+  State<HozaSheet> createState() => _HozaSheetState();
+}
+
+class _HozaSheetState extends State<HozaSheet> {
+  Timer? _refresh;
+
+  /// Flips on every tick; the fill's alpha follows it by one step.
+  bool _nudged = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh = Timer.periodic(HozaSheet._refreshInterval, (_) {
+      if (mounted) setState(() => _nudged = !_nudged);
+    });
+  }
+
+  @override
+  void dispose() {
+    _refresh?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = context.colors;
     final media = MediaQuery.of(context);
+    final title = widget.title;
+    final trailing = widget.trailing;
+    final footer = widget.footer;
+    final padding = widget.padding;
     // Inside a draggable sheet the height is the sheet's to decide, and the
     // body has to scroll with the controller the drag is listening to.
     final scrollController = SheetScrollScope.maybeOf(context);
     final expandable = scrollController != null;
 
-    final glass = frosted && !context.reduceMotion;
-    final fill = glass
-        ? palette.surface.withValues(alpha: _glassAlpha)
-        : palette.surface;
+    final glass = widget.frosted && !context.reduceMotion;
+    // One step below full every other tick: the same colour to the eye, a
+    // different paint to the renderer. See [HozaSheet._refreshInterval].
+    final alpha =
+        (glass ? HozaSheet._glassAlpha : 1.0) - (_nudged ? 1 / 255 : 0);
+    final fill = palette.surface.withValues(alpha: alpha);
 
     Widget sheet = DecoratedBox(
       decoration: BoxDecoration(
@@ -91,7 +144,7 @@ class HozaSheet extends StatelessWidget {
               top: 0,
               left: 0,
               right: 0,
-              height: _washHeight,
+              height: HozaSheet._washHeight,
               child: IgnorePointer(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
@@ -115,7 +168,7 @@ class HozaSheet extends StatelessWidget {
                 constraints: BoxConstraints(
                   maxHeight: expandable
                       ? double.infinity
-                      : media.size.height * maxHeightFraction,
+                      : media.size.height * widget.maxHeightFraction,
                 ),
                 child: Column(
                   mainAxisSize: expandable
@@ -135,7 +188,7 @@ class HozaSheet extends StatelessWidget {
                           children: [
                             Expanded(
                               child: SheenText(
-                                title!,
+                                title,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: AppTypography.title.copyWith(
@@ -159,7 +212,7 @@ class HozaSheet extends StatelessWidget {
                               ? Gap.sm
                               : padding.bottom + media.viewInsets.bottom,
                         ),
-                        child: child,
+                        child: widget.child,
                       ),
                     ),
 
@@ -220,7 +273,10 @@ class HozaSheet extends StatelessWidget {
 
     if (glass) {
       sheet = BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: _blurSigma, sigmaY: _blurSigma),
+        filter: ImageFilter.blur(
+          sigmaX: HozaSheet._blurSigma,
+          sigmaY: HozaSheet._blurSigma,
+        ),
         child: sheet,
       );
     }
@@ -299,7 +355,8 @@ class SheetScrollScope extends InheritedWidget {
 /// [expandable] opens the sheet at [initialFraction] of the screen and lets
 /// the user pull it to [maxFraction], snapping between the two — for a sheet
 /// whose list can be long, like twenty photos of one post. Left off, the
-/// sheet sizes itself to its content.
+/// sheet sizes itself to its content. [entrance] is how long the sheet takes
+/// to slide up; the default suits the app's own sheets.
 Future<T?> showHozaSheet<T>({
   required BuildContext context,
   required WidgetBuilder builder,
@@ -308,8 +365,9 @@ Future<T?> showHozaSheet<T>({
   bool expandable = false,
   double initialFraction = 0.65,
   double maxFraction = 0.94,
+  Duration entrance = Motion.slow,
 }) {
-  final duration = context.motion(Motion.slow);
+  final duration = context.motion(entrance);
   return showModalBottomSheet<T>(
     context: context,
     isScrollControlled: true,

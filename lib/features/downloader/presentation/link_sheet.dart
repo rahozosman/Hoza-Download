@@ -30,26 +30,46 @@ import 'widgets/duplicate_sheet.dart';
 import 'widgets/media_header.dart';
 import 'widgets/variant_picker.dart';
 
+/// Whether a link sheet is on screen right now, anywhere in the app.
+///
+/// A share can reach the sheet by more than one path at once — the floating
+/// window's own show loop, the share listener, a pasted link — and two of
+/// them firing for the same share would stack a second sheet on the first.
+/// One sheet at a time is the rule, enforced here rather than trusted to
+/// every caller.
+bool _linkSheetVisible = false;
+
 /// Opens the compact link sheet for [url].
 ///
 /// This is the surface an Android share lands on, so it is a sheet rather than
 /// a full screen — the user stays in context and dismisses with one gesture.
+/// A second call while one is already open is ignored: the sheet that is up
+/// already carries the share.
 Future<void> showLinkSheet(
   BuildContext context,
   Uri url, {
   bool overlay = false,
-}) {
-  return showHozaSheet<void>(
-    context: context,
-    // A half sheet the user can pull to full height when the list of
-    // qualities or photos runs long.
-    expandable: true,
-    initialFraction: 0.65,
-    // The sheet wears the app's own theme — dark when the app is dark — so
-    // what slides up over another app is recognisably Hoza, in the mode the
-    // user chose for it.
-    builder: (_) => LinkSheet(url: url, overlay: overlay),
-  );
+}) async {
+  if (_linkSheetVisible) return;
+  _linkSheetVisible = true;
+  try {
+    await showHozaSheet<void>(
+      context: context,
+      // A half sheet the user can pull to full height when the list of
+      // qualities or photos runs long.
+      expandable: true,
+      initialFraction: 0.5,
+      // A share is a detour from whatever the user was watching; the sheet
+      // gets up quicker than the app's own sheets so the detour stays short.
+      entrance: Motion.fast,
+      // The sheet wears the app's own theme — dark when the app is dark — so
+      // what slides up over another app is recognisably Hoza, in the mode the
+      // user chose for it.
+      builder: (_) => LinkSheet(url: url, overlay: overlay),
+    );
+  } finally {
+    _linkSheetVisible = false;
+  }
 }
 
 class LinkSheet extends ConsumerStatefulWidget {
