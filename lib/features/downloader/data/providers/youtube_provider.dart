@@ -26,8 +26,13 @@ import '../resolvers/endpoint_health.dart';
 /// YouTube publishes each quality as its own file and keeps the picture and
 /// the sound apart above 360p, so the high qualities are offered as a pair of
 /// tracks that the download engine merges on the device. Only H.264 in an MP4
-/// container is offered: that is what Android's own muxer can merge without
-/// re-encoding, on every phone the app runs on.
+/// container is offered for the picture: that is what Android's own muxer can
+/// merge without re-encoding, on every phone the app runs on.
+///
+/// The sound is taken wherever it is found. AAC is preferred — it merges
+/// untouched — but most videos are published with Opus and no AAC at all, and
+/// those are re-encoded on the device on the way in rather than left out. That
+/// is the difference between a 1080p download with sound and a 360p one.
 ///
 /// The manifest is not asked for once. YouTube answers its phone app, its
 /// iPhone app and its headset app from separate player endpoints, and on any
@@ -436,17 +441,15 @@ class YoutubeProvider implements SourceProvider {
   /// Keeps only the tracks the media servers will actually hand over.
   ///
   /// Every track the picker could end up offering — the best H.264 rendition
-  /// of each height, every AAC track, and the ready-mixed files if no AAC
-  /// track is served — is asked for one byte of itself. A track the server
-  /// refuses is dropped, so a quality is never shown that would fail the
-  /// moment the user chose it. The probes run together and cost one small
-  /// round trip each.
+  /// of each height, the soundtracks from [_audioCandidates], and the
+  /// ready-mixed files if no soundtrack is served — is asked for one byte of
+  /// itself. A track the server refuses is dropped, so a quality is never
+  /// shown that would fail the moment the user chose it. The probes run
+  /// together and cost one small round trip each.
   Future<List<_Track>> _verify(List<_Track> tracks, Duration budget) async {
     final videos = _bestPerHeight(tracks);
     final heights = videos.keys.toList()..sort((a, b) => b.compareTo(a));
-    final audios = tracks
-        .where((t) => t.isAudioOnly && t.container == _mp4 && t.isDefaultAudio)
-        .toList();
+    final audios = _audioCandidates(tracks);
 
     final candidates = <_Track>[
       for (final height in heights.take(_maxVideoVariants)) videos[height]!,
@@ -467,6 +470,27 @@ class YoutubeProvider implements SourceProvider {
       served.addAll(await _servedOf(muxed, timeout));
     }
     return served;
+  }
+
+  /// The soundtracks worth probing: every AAC one, and the best of whatever
+  /// else the video carries its sound in.
+  ///
+  /// Only AAC used to be probed, and most videos are published with Opus and
+  /// no AAC at all — which left a 1080p picture with nothing to merge into it
+  /// and dropped the whole video to the 360p ready-mixed file. The engine
+  /// re-encodes an Opus track on the way in, so it belongs in the pool.
+  ///
+  /// Only the video's own language is considered here and in [_bestAudio]: a
+  /// dubbed track would otherwise be merged in silently.
+  List<_Track> _audioCandidates(List<_Track> tracks) {
+    final own = tracks.where((t) => t.isAudioOnly && t.isDefaultAudio).toList();
+    final aac = own.where((t) => t.container == _mp4).toList();
+    final others = own.where((t) => t.container != _mp4).toList()
+      ..sort((a, b) => b.bitrate.compareTo(a.bitrate));
+    // Every AAC track, but only the best of the rest: YouTube's media servers
+    // answer for a video's Opus renditions as a set, so probing the others
+    // would buy nothing for the round trips it costs.
+    return [...aac, if (others.isNotEmpty) others.first];
   }
 
   Future<List<_Track>> _servedOf(List<_Track> tracks, Duration timeout) async {
@@ -562,7 +586,10 @@ class YoutubeProvider implements SourceProvider {
     final audio = _bestAudio(tracks);
     final variants = <MediaVariant>[
       ..._videoVariants(tracks, audio),
-      ..._audioVariants(audio),
+      // A ready-mixed file carries the same soundtrack, and the encoder throws
+      // its picture away — so an audio download is still on offer for a video
+      // YouTube publishes no separate audio track for.
+      ..._audioVariants(audio ?? _bestMuxed(tracks), details.durationSeconds),
     ];
 
     if (variants.isEmpty) {
@@ -585,16 +612,34 @@ class YoutubeProvider implements SourceProvider {
     );
   }
 
-  /// The best AAC track, which is both the highest quality audio download and
-  /// the sound merged into every paired video. Only the video's own language
-  /// is considered: a dubbed track would be merged in silently otherwise.
+  /// The soundtrack merged into every paired video, and the source of every
+  /// audio download.
+  ///
+  /// AAC first, because Android's muxer copies it into the video untouched and
+  /// the download costs nothing but the transfer. Anything else — Opus, in
+  /// practice — is taken only when no AAC track is served, and is re-encoded
+  /// on the device; slower, but it is what most videos are published with, and
+  /// taking it is what keeps them from being offered without their sound.
   _Track? _bestAudio(List<_Track> tracks) {
-    final candidates = tracks
-        .where((t) => t.isAudioOnly && t.container == _mp4 && t.isDefaultAudio)
-        .toList();
-    if (candidates.isEmpty) return null;
+    final own = tracks.where((t) => t.isAudioOnly && t.isDefaultAudio).toList();
+    if (own.isEmpty) return null;
+    final aac = own.where((t) => t.container == _mp4).toList();
+    final candidates = aac.isNotEmpty ? aac : own;
     candidates.sort((a, b) => b.bitrate.compareTo(a.bitrate));
     return candidates.first;
+  }
+
+  /// The best of the ready-mixed files, whose sound stands in when YouTube
+  /// serves no separate audio track for this video. Its bitrate covers both
+  /// tracks, so this is the whole file: the sheet shows what that costs to
+  /// fetch before anything is downloaded.
+  _Track? _bestMuxed(List<_Track> tracks) {
+    final muxed = tracks
+        .where((t) => t.isMuxed && t.container == _mp4)
+        .toList();
+    if (muxed.isEmpty) return null;
+    muxed.sort((a, b) => b.bitrate.compareTo(a.bitrate));
+    return muxed.first;
   }
 
   List<MediaVariant> _videoVariants(List<_Track> tracks, _Track? audio) {
@@ -660,20 +705,62 @@ class YoutubeProvider implements SourceProvider {
     );
   }
 
-  List<MediaVariant> _audioVariants(_Track? audio) {
+  /// The audio downloads on offer, best first.
+  ///
+  /// YouTube does not let a caller pick a bitrate. It publishes one soundtrack
+  /// per video — usually ~160 kbps Opus or 128 kbps AAC, and for some videos a
+  /// 256 kbps AAC track — and that is the whole choice. So both of these are
+  /// written on the device from whatever came down, unless YouTube already
+  /// serves the one that was asked for, in which case the file is saved
+  /// exactly as it arrived.
+  ///
+  /// Encoding at a higher bitrate than the source cannot put back detail the
+  /// download never carried; it makes a larger file of the same sound, in the
+  /// format that was asked for.
+  static const List<int> _audioBitrates = [320, 256];
+
+  /// How far under a target YouTube's own bitrate may sit and still count as
+  /// meeting it. Its 256 kbps track is reported a hair under often enough that
+  /// an exact test would re-encode it for no gain at all.
+  static const int _bitrateSlack = 8;
+
+  List<MediaVariant> _audioVariants(_Track? audio, int? durationSeconds) {
     if (audio == null) return const <MediaVariant>[];
-    final kbps = (audio.bitrate / 1000).round();
     return [
-      MediaVariant(
-        id: 'yt-audio-${audio.tag}',
-        label: 'M4A $kbps kbps',
-        format: MediaFormat.m4a,
-        url: audio.url,
-        bitrateKbps: kbps,
-        estimatedBytes: audio.bytes,
-        supportsResume: true,
-      ),
+      for (final kbps in _audioBitrates)
+        _audioVariant(audio, kbps, durationSeconds),
     ];
+  }
+
+  MediaVariant _audioVariant(_Track audio, int kbps, int? durationSeconds) {
+    final served = (audio.bitrate / 1000).round();
+    // A ready-mixed file is never saved as it stands, whatever its bitrate
+    // says: that number covers a picture the audio download does not want.
+    final asIs =
+        audio.isAudioOnly &&
+        audio.container == _mp4 &&
+        served + _bitrateSlack >= kbps;
+
+    return MediaVariant(
+      id: 'yt-audio-${audio.tag}-$kbps',
+      label: 'M4A $kbps kbps',
+      format: MediaFormat.m4a,
+      url: audio.url,
+      bitrateKbps: kbps,
+      // What comes down the wire either way — the source track, whole.
+      estimatedBytes: audio.bytes,
+      reencodeKbps: asIs ? null : kbps,
+      outputBytes: asIs ? audio.bytes : _weightAt(kbps, durationSeconds),
+      supportsResume: true,
+    );
+  }
+
+  /// What [kbps] of sound weighs over [durationSeconds], or null when the
+  /// lookup reported no duration — the sheet then says the size is unknown
+  /// rather than inventing one.
+  static int? _weightAt(int kbps, int? durationSeconds) {
+    if (durationSeconds == null || durationSeconds <= 0) return null;
+    return durationSeconds * kbps * 1000 ~/ 8;
   }
 
   /// YouTube's own label, but only when it agrees with the resolution the

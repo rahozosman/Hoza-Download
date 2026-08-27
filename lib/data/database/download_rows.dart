@@ -35,6 +35,7 @@ abstract final class DownloadRows {
   static const String columnHeaders = 'headers';
   static const String columnAudioUrl = 'audio_url';
   static const String columnAudioBytes = 'audio_bytes';
+  static const String columnReencodeKbps = 'reencode_kbps';
   static const String columnGroupId = 'group_id';
 
   static Map<String, Object?> toRow(DownloadRecord record) {
@@ -60,6 +61,7 @@ abstract final class DownloadRows {
       columnHeaders: record.headers.isEmpty ? null : jsonEncode(record.headers),
       columnAudioUrl: record.audioUrl,
       columnAudioBytes: record.audioBytes,
+      columnReencodeKbps: record.reencodeKbps,
       columnGroupId: record.groupId,
       // Live speed is meaningless once the app closes and is not stored.
     };
@@ -97,6 +99,7 @@ abstract final class DownloadRows {
       headers: _headers(row[columnHeaders]),
       audioUrl: _string(row[columnAudioUrl]),
       audioBytes: _int(row[columnAudioBytes]),
+      reencodeKbps: _int(row[columnReencodeKbps]),
       groupId: _string(row[columnGroupId]),
     );
   }

@@ -9,13 +9,17 @@ import '../domain/download_engine.dart';
 import 'http_download_engine.dart';
 import 'segmented_download_engine.dart';
 
-/// Adds paired video+audio downloads on top of a plain byte engine.
+/// Adds paired video+audio downloads, and re-encoded audio downloads, on top
+/// of a plain byte engine.
 ///
 /// Sites that publish adaptive streams keep the picture and the sound in
 /// separate files. This engine fetches both — one after the other, so the
 /// bandwidth still goes to one transfer at a time — and merges them into the
-/// file the caller asked for. A request with no audio track is handed straight
-/// to [_inner], so ordinary downloads take exactly the path they always did.
+/// file the caller asked for. An audio download at a bitrate the source does
+/// not publish takes the same shape with the video stage left out: the track
+/// comes down once and is written back out at the chosen bitrate. A request
+/// that needs neither is handed straight to [_inner], so ordinary downloads
+/// take exactly the path they always did.
 class MuxingDownloadEngine implements DownloadEngine {
   const MuxingDownloadEngine(this._inner, this._muxer);
 
@@ -24,15 +28,17 @@ class MuxingDownloadEngine implements DownloadEngine {
 
   @override
   DownloadTask start(DownloadRequest request) {
-    if (request.audioUrl == null) return _inner.start(request);
-    return _PairedDownloadTask(_inner, _muxer, request);
+    if (request.audioUrl == null && request.reencodeKbps == null) {
+      return _inner.start(request);
+    }
+    return _AssembledDownloadTask(_inner, _muxer, request);
   }
 }
 
-/// Runs the two transfers and the merge as one task, so the rest of the app
-/// still sees a single download with a single outcome.
-class _PairedDownloadTask implements DownloadTask {
-  _PairedDownloadTask(this._inner, this._muxer, this._request) {
+/// Runs the transfers and the assembling step as one task, so the rest of the
+/// app still sees a single download with a single outcome.
+class _AssembledDownloadTask implements DownloadTask {
+  _AssembledDownloadTask(this._inner, this._muxer, this._request) {
     unawaited(_run());
   }
 
@@ -57,6 +63,18 @@ class _PairedDownloadTask implements DownloadTask {
 
   File get _videoPart => File('${_request.target.path}.v');
   File get _audioPart => File('${_request.target.path}.a');
+
+  /// Whether there is a picture to fetch and merge. False for an audio-only
+  /// download that is here purely to be re-encoded.
+  bool get _hasVideo => _request.audioUrl != null;
+
+  /// Where the sound comes from: its own track for a paired download, the
+  /// request's own address for an audio-only one.
+  Uri get _audioUrl => _request.audioUrl ?? _request.url;
+
+  /// Size of the sound as the source serves it.
+  int? get _audioBytes =>
+      _hasVideo ? _request.audioBytes : _request.expectedBytes;
 
   /// Size of the video track alone. Known only when the source reported both
   /// the combined size and the audio size.
@@ -90,24 +108,26 @@ class _PairedDownloadTask implements DownloadTask {
 
   Future<void> _run() async {
     try {
-      final video = await _fetch(
-        url: _request.url,
-        target: _videoPart,
-        expected: _videoBytes,
-      );
-      if (video != null) return _complete(video);
+      if (_hasVideo) {
+        final video = await _fetch(
+          url: _request.url,
+          target: _videoPart,
+          expected: _videoBytes,
+        );
+        if (video != null) return _complete(video);
 
-      _completedBytes = await _lengthOf(_videoPart);
+        _completedBytes = await _lengthOf(_videoPart);
+      }
 
       final audio = await _fetch(
-        url: _request.audioUrl!,
+        url: _audioUrl,
         target: _audioPart,
-        expected: _request.audioBytes,
+        expected: _audioBytes,
       );
       if (audio != null) return _complete(audio);
 
       _completedBytes += await _lengthOf(_audioPart);
-      await _merge();
+      await _assemble();
     } on FileSystemException {
       await _discardParts();
       _complete(
@@ -190,20 +210,29 @@ class _PairedDownloadTask implements DownloadTask {
     }
   }
 
-  Future<void> _merge() async {
-    final merged = await _muxer.merge(
-      video: _videoPart,
-      audio: _audioPart,
-      output: _request.target,
-    );
+  /// Turns the fetched track — or pair of tracks — into the file the user
+  /// asked for.
+  Future<void> _assemble() async {
+    final done = _hasVideo
+        ? await _muxer.merge(
+            video: _videoPart,
+            audio: _audioPart,
+            output: _request.target,
+          )
+        : await _muxer.transcode(
+            source: _audioPart,
+            output: _request.target,
+            bitrateKbps: _request.reencodeKbps!,
+          );
 
-    if (!merged) {
-      // Never publish a silent video: the download failed, and says why.
+    if (!done) {
+      // Never publish a silent video or a half-written track: the download
+      // failed, and says why.
       await _discardParts();
       await _delete(_request.target);
       _complete(
         DownloadFailed(
-          kind: DownloadErrorKind.merge,
+          kind: _hasVideo ? DownloadErrorKind.merge : DownloadErrorKind.encode,
           receivedBytes: _completedBytes,
         ),
       );

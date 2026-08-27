@@ -410,8 +410,9 @@ class _QualityTile extends StatelessWidget {
     if (!variant.label.toUpperCase().contains(variant.format.label)) {
       parts.add(variant.format.label);
     }
-    // Both tracks of a paired download, so the size matches the saved file.
-    final size = variant.totalEstimatedBytes;
+    // Both tracks of a paired download, and the written size of a re-encoded
+    // one, so the number matches the file that ends up on the phone.
+    final size = variant.savedBytes;
     if (size != null) parts.add(Formatters.bytes(size));
     return parts.join(' · ');
   }
@@ -567,7 +568,7 @@ class EstimatedSizeRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = context.colors;
     final selected = variant;
-    final bytes = selected?.totalEstimatedBytes;
+    final bytes = selected?.savedBytes;
 
     final visuals = MediaVisuals.of(
       selected?.mediaType ?? MediaType.video,

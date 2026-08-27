@@ -13,12 +13,16 @@ import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 
 /**
- * Merges a video-only file and an audio-only file into one playable MP4.
+ * Merges a video-only file and an audio-only file into one playable MP4, and
+ * re-encodes an audio file at a chosen bitrate.
  *
  * Sites that publish adaptive streams keep the tracks in separate files, so a
  * download of the video alone would be silent. [MediaMuxer] is part of Android
- * itself, so this costs no APK size and no re-encoding: the compressed samples
- * are copied across untouched, which is fast and lossless.
+ * itself, so this costs no APK size and, for a soundtrack already in AAC, no
+ * re-encoding: the compressed samples are copied across untouched, which is
+ * fast and lossless. A soundtrack in any other codec — Opus, which is what
+ * YouTube serves for most videos — is converted first by [AudioTranscoder],
+ * because the muxer will not write it into an MP4 as it stands.
  *
  * The work runs off the main thread — a large file would otherwise block the
  * UI — and the result is always posted back on the platform thread, because
@@ -48,6 +52,21 @@ class MuxerChannel {
                         main.post { deliver(result, outcome) }
                     }
                 }
+                "transcode" -> {
+                    val inputPath = call.argument<String>("input")
+                    val outputPath = call.argument<String>("output")
+                    val bitrate = call.argument<Int>("bitrate")
+                    if (inputPath == null || outputPath == null || bitrate == null) {
+                        result.error("bad_arguments", "input, output and bitrate are required", null)
+                        return@setMethodCallHandler
+                    }
+                    worker.execute {
+                        val outcome = runCatching {
+                            AudioTranscoder.transcode(inputPath, outputPath, bitrate)
+                        }
+                        main.post { deliver(result, outcome) }
+                    }
+                }
                 else -> result.notImplemented()
             }
         }
@@ -61,13 +80,41 @@ class MuxerChannel {
     }
 
     /**
+     * Merges [videoPath] and [audioPath] into [outputPath], converting the
+     * soundtrack first when the muxer will not take it as it stands.
+     *
+     * Android's MP4 muxer accepts AAC and little else, while YouTube serves
+     * most soundtracks as Opus. Copying the samples across is the fast, lossless
+     * path and is taken whenever it can be; anything else is re-encoded to AAC
+     * rather than being dropped, which is what keeps those videos from
+     * arriving silent.
+     */
+    private fun mux(videoPath: String, audioPath: String, outputPath: String) {
+        val mime = AudioTranscoder.audioMimeOf(audioPath)
+            ?: error("No audio track in the downloaded file")
+
+        if (mime.equals(AudioTranscoder.AAC_MIME, ignoreCase = true)) {
+            combine(videoPath, audioPath, outputPath)
+            return
+        }
+
+        val converted = File("$outputPath.aac")
+        try {
+            AudioTranscoder.transcode(audioPath, converted.path, AudioTranscoder.MERGE_BITRATE)
+            combine(videoPath, converted.path, outputPath)
+        } finally {
+            converted.delete()
+        }
+    }
+
+    /**
      * Copies every track of [videoPath] and the first audio track of
      * [audioPath] into [outputPath].
      *
      * A partially written output is deleted on failure so a later retry never
      * publishes a truncated file.
      */
-    private fun mux(videoPath: String, audioPath: String, outputPath: String) {
+    private fun combine(videoPath: String, audioPath: String, outputPath: String) {
         val output = File(outputPath)
         val videoExtractor = MediaExtractor()
         val audioExtractor = MediaExtractor()

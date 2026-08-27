@@ -23,6 +23,7 @@ class DownloadRecord {
     this.headers = const <String, String>{},
     this.audioUrl,
     this.audioBytes,
+    this.reencodeKbps,
     this.filePath,
     this.thumbnailUrl,
     this.totalBytes,
@@ -64,6 +65,11 @@ class DownloadRecord {
   /// Size of [audioUrl], so the video track's own size can be worked out from
   /// [totalBytes] when a paused paired download resumes.
   final int? audioBytes;
+
+  /// Bitrate the sound is re-encoded to before the file is saved, in kbps.
+  /// Null for a download saved exactly as it arrived. Persisted so a download
+  /// resumed after a restart still produces the format the user chose.
+  final int? reencodeKbps;
 
   bool get needsMuxing => audioUrl != null && audioUrl!.isNotEmpty;
 
@@ -138,10 +144,12 @@ class DownloadRecord {
     Map<String, String>? headers,
     String? audioUrl,
     int? audioBytes,
+    int? reencodeKbps,
     bool? supportsResume,
     bool clearSpeed = false,
     bool clearError = false,
     bool clearAudio = false,
+    bool clearReencode = false,
   }) {
     return DownloadRecord(
       id: id,
@@ -151,6 +159,7 @@ class DownloadRecord {
       headers: headers ?? this.headers,
       audioUrl: clearAudio ? null : (audioUrl ?? this.audioUrl),
       audioBytes: clearAudio ? null : (audioBytes ?? this.audioBytes),
+      reencodeKbps: clearReencode ? null : (reencodeKbps ?? this.reencodeKbps),
       title: title ?? this.title,
       fileName: fileName ?? this.fileName,
       filePath: filePath ?? this.filePath,

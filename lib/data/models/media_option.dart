@@ -78,6 +78,8 @@ class MediaVariant {
     this.headers = const <String, String>{},
     this.audioUrl,
     this.audioBytes,
+    this.reencodeKbps,
+    this.outputBytes,
   });
 
   /// Provider-scoped identifier for this variant.
@@ -120,9 +122,22 @@ class MediaVariant {
   /// Size of [audioUrl], when the source reported one.
   final int? audioBytes;
 
+  /// Bitrate the downloaded sound is re-encoded to before it is saved, in
+  /// kbps. Null — the usual case — when the bytes are saved exactly as the
+  /// source served them.
+  ///
+  /// Set only when the source does not publish the bitrate the user chose;
+  /// re-encoding cannot add detail that was never downloaded, it only makes
+  /// the file the chosen format asks for.
+  final int? reencodeKbps;
+
+  /// What the saved file will weigh when re-encoding changes it. Null whenever
+  /// the download and the saved file are the same bytes.
+  final int? outputBytes;
+
   bool get needsMuxing => audioUrl != null;
 
-  /// What the finished file will weigh: both tracks when they are merged.
+  /// What has to be fetched: both tracks when they are merged.
   int? get totalEstimatedBytes {
     final video = estimatedBytes;
     if (video == null) return null;
@@ -130,6 +145,10 @@ class MediaVariant {
     final audio = audioBytes;
     return audio == null ? null : video + audio;
   }
+
+  /// What the finished file will weigh — which is not what comes down the wire
+  /// when the sound is re-encoded on the way in.
+  int? get savedBytes => outputBytes ?? totalEstimatedBytes;
 
   MediaType get mediaType => format.mediaType;
 }

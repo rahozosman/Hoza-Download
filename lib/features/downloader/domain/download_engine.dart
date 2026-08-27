@@ -16,6 +16,7 @@ class DownloadRequest {
     this.headers = const <String, String>{},
     this.audioUrl,
     this.audioBytes,
+    this.reencodeKbps,
   });
 
   /// Matches the record id, so progress can be routed back without a lookup.
@@ -48,6 +49,10 @@ class DownloadRequest {
   /// Size of [audioUrl], when the source reported one.
   final int? audioBytes;
 
+  /// Bitrate, in kbps, the downloaded sound is re-encoded to once it is on
+  /// disk. Null for a transfer that is saved exactly as it arrived.
+  final int? reencodeKbps;
+
   DownloadRequest resumingFrom(int bytes) => DownloadRequest(
     id: id,
     url: url,
@@ -60,6 +65,7 @@ class DownloadRequest {
     headers: headers,
     audioUrl: audioUrl,
     audioBytes: audioBytes,
+    reencodeKbps: reencodeKbps,
   );
 }
 
@@ -98,7 +104,11 @@ enum DownloadErrorKind {
   insufficientStorage,
   corrupted,
   invalidLink,
-  merge;
+  merge,
+
+  /// The sound came down whole but could not be re-encoded to the bitrate the
+  /// chosen format asks for.
+  encode;
 
   String get message => switch (this) {
     DownloadErrorKind.network =>
@@ -122,6 +132,8 @@ enum DownloadErrorKind {
       'This download link is no longer valid. Open the source again.',
     DownloadErrorKind.merge =>
       'The video and audio tracks could not be combined on this device.',
+    DownloadErrorKind.encode =>
+      'This device could not save the audio at that bitrate. Try a lower one.',
   };
 
   /// Whether trying the same download again could plausibly succeed.

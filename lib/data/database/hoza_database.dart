@@ -16,7 +16,8 @@ abstract final class HozaDatabase {
   /// v2 — preferences table.
   /// v3 — per-download request headers and a paired audio track.
   /// v4 — group id, so the photos of one post are saved as one set.
-  static const int schemaVersion = 4;
+  /// v5 — the bitrate an audio download is re-encoded to.
+  static const int schemaVersion = 5;
 
   static const String preferencesTable = 'preferences';
   static const String preferenceKey = 'key';
@@ -36,6 +37,7 @@ abstract final class HozaDatabase {
         if (from < 2) await _createPreferences(db);
         if (from < 3) await _addMuxingColumns(db);
         if (from < 4) await _addGroupColumn(db);
+        if (from < 5) await _addReencodeColumn(db);
       },
     );
   }
@@ -64,6 +66,7 @@ abstract final class HozaDatabase {
         ${DownloadRows.columnHeaders} TEXT,
         ${DownloadRows.columnAudioUrl} TEXT,
         ${DownloadRows.columnAudioBytes} INTEGER,
+        ${DownloadRows.columnReencodeKbps} INTEGER,
         ${DownloadRows.columnGroupId} TEXT
       )
     ''');
@@ -111,6 +114,18 @@ abstract final class HozaDatabase {
       await db.execute(
         'ALTER TABLE ${DownloadRows.table} '
         'ADD COLUMN ${DownloadRows.columnGroupId} TEXT',
+      );
+    } on DatabaseException {
+      // Already present; nothing to migrate.
+    }
+  }
+
+  /// Additive and idempotent, like [_addMuxingColumns].
+  static Future<void> _addReencodeColumn(Database db) async {
+    try {
+      await db.execute(
+        'ALTER TABLE ${DownloadRows.table} '
+        'ADD COLUMN ${DownloadRows.columnReencodeKbps} INTEGER',
       );
     } on DatabaseException {
       // Already present; nothing to migrate.

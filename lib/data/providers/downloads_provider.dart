@@ -404,6 +404,7 @@ class DownloadsController extends Notifier<DownloadsState> {
       headers: variant.headers,
       audioUrl: variant.audioUrl?.toString(),
       audioBytes: variant.audioBytes,
+      reencodeKbps: variant.reencodeKbps,
       title: title,
       fileName: fileNameFor(metadata, variant),
       source: metadata.source,
@@ -544,6 +545,8 @@ class DownloadsController extends Notifier<DownloadsState> {
         audioUrl: variant.audioUrl?.toString(),
         audioBytes: variant.audioBytes,
         clearAudio: variant.audioUrl == null,
+        reencodeKbps: variant.reencodeKbps,
+        clearReencode: variant.reencodeKbps == null,
         supportsResume: variant.supportsResume,
         totalBytes: variant.totalEstimatedBytes,
         downloadedBytes: 0,
@@ -842,15 +845,17 @@ class DownloadsController extends Notifier<DownloadsState> {
 
       // A paired download writes its two tracks beside the target and only
       // fills the target when they are merged, so a part-sized target is never
-      // mistaken for a finished file.
+      // mistaken for a finished file. A re-encoded one does the same with its
+      // single track.
       final audioUrl = record.needsMuxing
           ? Uri.tryParse(record.audioUrl!)
           : null;
+      final assembles = audioUrl != null || record.reencodeKbps != null;
 
       // The bytes are already on disk — a previous run finished but could not
       // publish. Re-fetching them would be pure waste.
       final expected = record.totalBytes;
-      if (audioUrl == null &&
+      if (!assembles &&
           expected != null &&
           expected > 0 &&
           resumeFrom >= expected) {
@@ -872,6 +877,7 @@ class DownloadsController extends Notifier<DownloadsState> {
         headers: record.headers,
         audioUrl: audioUrl,
         audioBytes: record.audioBytes,
+        reencodeKbps: record.reencodeKbps,
       );
 
       final task = _engine.start(request);
