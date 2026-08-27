@@ -18,42 +18,63 @@ class MediaThumbnail extends StatelessWidget {
     this.width = 64,
     this.aspectRatio = 16 / 10,
     this.borderRadius = Radii.tileRadius,
+    this.headers = const <String, String>{},
   });
+
+  /// A thumbnail that takes whatever space its parent gives it, instead of
+  /// sizing itself. For a grid whose cells are already shaped — the photo
+  /// picker's, which are square.
+  const MediaThumbnail.expand({
+    super.key,
+    required this.mediaType,
+    this.imageUrl,
+    this.borderRadius = Radii.tileRadius,
+    this.headers = const <String, String>{},
+  }) : width = null,
+       aspectRatio = 1;
 
   final MediaType mediaType;
   final String? imageUrl;
-  final double width;
+
+  /// Null when the thumbnail fills its parent — see [MediaThumbnail.expand].
+  final double? width;
   final double aspectRatio;
   final BorderRadius borderRadius;
+
+  /// Headers the image host requires. Some CDNs answer only when the request
+  /// carries the `Referer` the media was published under, and a preview that
+  /// left them out would show the fallback mark beside a file that downloads
+  /// perfectly well.
+  final Map<String, String> headers;
 
   @override
   Widget build(BuildContext context) {
     final url = imageUrl;
 
-    return SizedBox(
-      width: width,
-      height: width / aspectRatio,
-      child: ClipRRect(
-        borderRadius: borderRadius,
-        child: url == null || url.isEmpty
-            ? _Fallback(mediaType: mediaType)
-            : Image.network(
-                url,
-                fit: BoxFit.cover,
-                loadingBuilder: (context, child, progress) {
-                  if (progress == null) {
-                    return _FadeIn(child: child);
-                  }
-                  return const Skeleton(
-                    height: double.infinity,
-                    borderRadius: BorderRadius.zero,
-                  );
-                },
-                errorBuilder: (context, _, _) =>
-                    _Fallback(mediaType: mediaType),
-              ),
-      ),
+    final image = ClipRRect(
+      borderRadius: borderRadius,
+      child: url == null || url.isEmpty
+          ? _Fallback(mediaType: mediaType)
+          : Image.network(
+              url,
+              fit: BoxFit.cover,
+              headers: headers.isEmpty ? null : headers,
+              loadingBuilder: (context, child, progress) {
+                if (progress == null) {
+                  return _FadeIn(child: child);
+                }
+                return const Skeleton(
+                  height: double.infinity,
+                  borderRadius: BorderRadius.zero,
+                );
+              },
+              errorBuilder: (context, _, _) => _Fallback(mediaType: mediaType),
+            ),
     );
+
+    final size = width;
+    if (size == null) return image;
+    return SizedBox(width: size, height: size / aspectRatio, child: image);
   }
 }
 

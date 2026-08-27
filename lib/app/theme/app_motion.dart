@@ -23,6 +23,15 @@ abstract final class Motion {
   /// Material 3 emphasised decelerate, for surfaces entering the screen.
   static const Curve emphasized = Cubic(0.05, 0.7, 0.1, 1);
 
+  /// For something that travels from one place on screen to another.
+  ///
+  /// [emphasized] is almost vertical off the mark — most of the distance is
+  /// covered in the first tenth of the time — which is right for a surface
+  /// arriving from off screen and wrong for an object crossing the screen: it
+  /// reads as a jump followed by a hover. This leaves gently, moves, and
+  /// arrives gently.
+  static const Curve travel = Cubic(0.2, 0, 0, 1);
+
   /// For elements leaving the screen.
   static const Curve exit = Curves.easeInCubic;
 

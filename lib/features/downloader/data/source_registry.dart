@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../services/config/remote_config.dart';
 import '../../../services/networking/http_client_provider.dart';
+import '../../../services/platform/media_muxer.dart';
 import '../../../services/telemetry/failure_reporter.dart';
 import '../domain/source_provider.dart';
 import 'link_canonicalizer.dart';
@@ -207,7 +208,7 @@ final sourceRegistryProvider = Provider<SourceRegistry>((ref) {
       // already names a file, and the page provider claims everything else —
       // which also makes it the last resort for a link a specialist could not
       // read.
-      YoutubeProvider(client, health),
+      YoutubeProvider(client, health, ref.watch(mediaMuxerProvider)),
       SocialMediaProvider(client, health, catalog: config.extractors),
       DirectMediaProvider(client),
       PageMediaProvider(client),

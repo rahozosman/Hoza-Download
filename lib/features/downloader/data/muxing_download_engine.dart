@@ -218,6 +218,10 @@ class _AssembledDownloadTask implements DownloadTask {
             video: _videoPart,
             audio: _audioPart,
             output: _request.target,
+            // The container decides what can be copied across as it is and
+            // what has to be re-encoded first, so the merge is told which one
+            // this download is rather than guessing from the tracks.
+            format: _request.format,
           )
         : await _muxer.transcode(
             source: _audioPart,

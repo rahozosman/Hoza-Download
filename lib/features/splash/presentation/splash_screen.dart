@@ -202,10 +202,16 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
       from: from,
       key: FlightTargets.homeMark,
       child: const HozaLogo(size: _Emblem._markSize),
-      duration: const Duration(milliseconds: 620),
+      // The masthead takes its own mark back the moment the flying one lands
+      // on it — same place, same size, so the hand-back cannot be seen.
+      // Waiting for the whole flight to be torn down instead leaves a frame
+      // or two with no mark anywhere, which is the blink at the end of it.
+      onLanded: () => FlightTargets.homeMarkInFlight.value = false,
     );
     unawaited(navigator.pushReplacementNamed(Routes.shell));
     await flight;
+    // Nothing flew — reduced motion, or no overlay to fly in. Either way the
+    // masthead cannot be left waiting for a mark that is never coming.
     FlightTargets.homeMarkInFlight.value = false;
   }
 

@@ -98,7 +98,10 @@ class _LinkSheetState extends ConsumerState<LinkSheet> {
   LookupCancel _cancel = LookupCancel();
 
   MediaType? _selectedType;
-  String? _selectedVariantId;
+
+  /// Everything ticked, by variant id. One id for a video or a soundtrack,
+  /// any number of them for a post's photos.
+  Set<String> _selectedIds = <String>{};
 
   /// Guards the Download button while the duplicate check and enqueue run.
   bool _starting = false;
@@ -127,7 +130,7 @@ class _LinkSheetState extends ConsumerState<LinkSheet> {
     _cancel = LookupCancel();
     setState(() {
       _selectedType = null;
-      _selectedVariantId = null;
+      _selectedIds = <String>{};
       // "Try again" means ask the source again, not repeat the cached answer.
       _resolution = _resolve(fresh: true);
     });
@@ -142,23 +145,62 @@ class _LinkSheetState extends ConsumerState<LinkSheet> {
       metadata,
       settings.defaultMediaType,
     );
-    final preferred = VariantSelection.preferred(
-      metadata.variantsFor(type),
-      settings.qualityPreference,
-    );
 
     _selectedType = type;
-    _selectedVariantId = preferred?.id;
+    _selectedIds = _defaultSelection(metadata, type);
   }
 
   void _selectType(MediaMetadata metadata, MediaType type) {
-    final preferred = VariantSelection.preferred(
-      metadata.variantsFor(type),
-      ref.read(settingsProvider).qualityPreference,
-    );
     setState(() {
       _selectedType = type;
-      _selectedVariantId = preferred?.id;
+      _selectedIds = _defaultSelection(metadata, type);
+    });
+  }
+
+  /// What a type opens on.
+  ///
+  /// Every photo of a post: sharing one is nearly always about the post, and
+  /// any of them can be unticked in a tap. A video or a soundtrack has one
+  /// answer instead — the rendition closest to the user's quality preference.
+  Set<String> _defaultSelection(MediaMetadata metadata, MediaType type) {
+    final variants = VariantSelection.ranked(metadata.variantsFor(type));
+    if (_picksSeveral(type, variants)) {
+      return {for (final variant in variants) variant.id};
+    }
+    final preferred = VariantSelection.preferred(
+      variants,
+      ref.read(settingsProvider).qualityPreference,
+    );
+    return preferred == null ? <String>{} : {preferred.id};
+  }
+
+  /// Whether this type is one where several files may be saved at once.
+  ///
+  /// Only a post with more than one photo in it: a video's resolutions are
+  /// renditions of one file, and ticking two of those would mean saving the
+  /// same video twice.
+  static bool _picksSeveral(MediaType type, List<MediaVariant> variants) =>
+      type == MediaType.image && variants.length > 1;
+
+  /// A tap on a tile: one more picture, one fewer, or a different rendition.
+  void _toggle(_Choice choice, MediaVariant variant) {
+    setState(() {
+      if (!choice.picksSeveral) {
+        _selectedIds = {variant.id};
+        return;
+      }
+      final next = {..._selectedIds};
+      if (!next.remove(variant.id)) next.add(variant.id);
+      _selectedIds = next;
+    });
+  }
+
+  /// Ticks every photo, or clears them when they are all already ticked.
+  void _toggleAll(_Choice choice) {
+    setState(() {
+      _selectedIds = choice.selection.length == choice.variants.length
+          ? <String>{}
+          : {for (final variant in choice.variants) variant.id};
     });
   }
 
@@ -371,14 +413,23 @@ class _LinkSheetState extends ConsumerState<LinkSheet> {
       final type = _selectedType ?? availableTypes.first;
       final variants = VariantSelection.ranked(metadata.variantsFor(type));
 
+      // Kept in the order the list is drawn in, so the photos are queued the
+      // way the post shows them however they were ticked.
+      var selection = variants
+          .where((variant) => _selectedIds.contains(variant.id))
+          .toList();
+      // A single-pick type always has something picked; an empty set only
+      // means the user has cleared a photo post, which is allowed.
+      if (selection.isEmpty && !_picksSeveral(type, variants)) {
+        selection = [variants.first];
+      }
+
       return _Choice(
         metadata: metadata,
         availableTypes: availableTypes,
         type: type,
         variants: variants,
-        selected:
-            variants.where((v) => v.id == _selectedVariantId).firstOrNull ??
-            variants.first,
+        selection: selection,
       );
     }
     return null;
@@ -459,9 +510,10 @@ class _LinkSheetState extends ConsumerState<LinkSheet> {
           selectedType: choice.type,
           onTypeSelected: (next) => _selectType(choice.metadata, next),
           variants: choice.variants,
-          selectedVariantId: choice.selected.id,
-          onVariantSelected: (variant) =>
-              setState(() => _selectedVariantId = variant.id),
+          selectedIds: choice.selectedIds,
+          onVariantSelected: (variant) => _toggle(choice, variant),
+          multiSelect: choice.picksSeveral,
+          onToggleAll: choice.picksSeveral ? () => _toggleAll(choice) : null,
         ),
       ],
     );
@@ -480,37 +532,47 @@ class _LinkSheetState extends ConsumerState<LinkSheet> {
     final checking = !snapshot.hasData && !snapshot.hasError;
     if (choice == null && !checking) return null;
 
-    // A post with several photos can be saved as one set. The button says
-    // how many, so "all" is never a surprise.
-    final photos = choice != null && choice.type == MediaType.image
-        ? choice.variants
-        : const <MediaVariant>[];
+    final selection = choice?.selection ?? const <MediaVariant>[];
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        EstimatedSizeRow(variant: choice?.selected),
+        EstimatedSizeRow(selection: choice == null ? null : selection),
         const SizedBox(height: Gap.sm),
         HozaButton(
-          label: 'Download',
-          icon: Icons.arrow_downward_rounded,
+          // The button says how many files it is about to save, so a set is
+          // never a surprise — and says what to do first when none are ticked.
+          label: choice != null && choice.picksSeveral
+              ? _photoLabel(selection.length)
+              : 'Download',
+          icon: selection.length > 1
+              ? Icons.collections_rounded
+              : Icons.arrow_downward_rounded,
           state: _starting ? HozaButtonState.loading : HozaButtonState.idle,
-          onPressed: choice == null
+          onPressed: choice == null || selection.isEmpty
               ? null
-              : () => _startDownload(choice.metadata, choice.selected),
+              : () => _start(choice.metadata, selection),
         ),
-        if (photos.length > 1) ...[
-          const SizedBox(height: Gap.xs),
-          HozaButton(
-            label: 'Save all ${photos.length} photos',
-            icon: Icons.collections_rounded,
-            variant: HozaButtonVariant.secondary,
-            state: _starting ? HozaButtonState.loading : HozaButtonState.idle,
-            onPressed: () => _startAll(choice!.metadata, photos),
-          ),
-        ],
       ],
     );
+  }
+
+  static String _photoLabel(int count) => switch (count) {
+    0 => 'Pick a photo to save',
+    1 => 'Download 1 photo',
+    _ => 'Download $count photos',
+  };
+
+  /// Saves what is ticked.
+  ///
+  /// One file still goes through the duplicate check, which is a question
+  /// about a name already on the device and only answerable one file at a
+  /// time; a set is queued as a set, and the numbered names keep it apart
+  /// from anything already saved.
+  Future<void> _start(MediaMetadata metadata, List<MediaVariant> selection) {
+    return selection.length == 1
+        ? _startDownload(metadata, selection.first)
+        : _startAll(metadata, selection);
   }
 
   /// Queues every photo of the post as one set and follows the first.
@@ -700,7 +762,7 @@ class _Choice {
     required this.availableTypes,
     required this.type,
     required this.variants,
-    required this.selected,
+    required this.selection,
   });
 
   final MediaMetadata metadata;
@@ -713,5 +775,13 @@ class _Choice {
   /// Every variant of [type], highest quality first.
   final List<MediaVariant> variants;
 
-  final MediaVariant selected;
+  /// What is ticked, in the order [variants] lists it. Empty only when the
+  /// user has cleared a photo post.
+  final List<MediaVariant> selection;
+
+  /// Whether several of these may be saved at once — a post's photos, and
+  /// nothing else. See `_picksSeveral`.
+  bool get picksSeveral => type == MediaType.image && variants.length > 1;
+
+  Set<String> get selectedIds => {for (final variant in selection) variant.id};
 }

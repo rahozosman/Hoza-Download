@@ -17,6 +17,7 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 import '../../../../core/constants/app_info.dart';
 import '../../../../core/utils/app_log.dart';
 import '../../../../data/models/media_option.dart';
+import '../../../../services/platform/media_muxer.dart';
 import '../../domain/source_provider.dart';
 import '../request_race.dart';
 import '../resolvers/endpoint_health.dart';
@@ -25,14 +26,20 @@ import '../resolvers/endpoint_health.dart';
 ///
 /// YouTube publishes each quality as its own file and keeps the picture and
 /// the sound apart above 360p, so the high qualities are offered as a pair of
-/// tracks that the download engine merges on the device. Only H.264 in an MP4
-/// container is offered for the picture: that is what Android's own muxer can
-/// merge without re-encoding, on every phone the app runs on.
+/// tracks that the download engine merges on the device.
 ///
-/// The sound is taken wherever it is found. AAC is preferred — it merges
-/// untouched — but most videos are published with Opus and no AAC at all, and
-/// those are re-encoded on the device on the way in rather than left out. That
-/// is the difference between a 1080p download with sound and a 360p one.
+/// Every resolution the video has is offered, in whichever pairing this
+/// device can actually assemble. H.264 beside AAC in an MP4 is preferred and
+/// covers everything up to 1080p. Above that YouTube publishes no H.264 at
+/// all — 1440p and 2160p exist only as VP9 and AV1 — so those are offered as
+/// VP9 beside YouTube's own Opus in a WebM, both copied in untouched, on the
+/// devices whose muxer writes one. See [_bestPerHeight].
+///
+/// The sound is taken wherever it is found. AAC is preferred for an MP4 — it
+/// merges untouched — but most videos are published with Opus and no AAC at
+/// all, and those are re-encoded on the device on the way in rather than left
+/// out. That is the difference between a 1080p download with sound and a 360p
+/// one.
 ///
 /// The manifest is not asked for once. YouTube answers its phone app, its
 /// iPhone app and its headset app from separate player endpoints, and on any
@@ -46,17 +53,31 @@ import '../resolvers/endpoint_health.dart';
 /// of a stream, for clients without an attestation token — with a 403. So
 /// every quality the picker would show is asked for first, its last byte, and
 /// only the ones the server actually answers are offered. See [_verify].
+///
+/// What survives that is not all equal. An endpoint whose separate tracks are
+/// all refused still leaves the 360p file YouTube publishes ready-mixed, and
+/// taking that as the answer is how a 4K video comes to be offered at 360p and
+/// nothing else. So an answer only settles the lookup once it carries a
+/// picture track and a soundtrack of its own; a ready-mixed leftover is held
+/// back and returned only if no endpoint does better. See [_Answer.isComplete].
 class YoutubeProvider implements SourceProvider {
-  YoutubeProvider(HttpClient client, EndpointHealth health)
-    : this._(client, health, yt.YoutubeHttpClient());
+  YoutubeProvider(
+    HttpClient client,
+    EndpointHealth health,
+    MediaMuxerBridge muxer,
+  ) : this._(client, health, muxer, yt.YoutubeHttpClient());
 
-  YoutubeProvider._(this._client, this._health, this._youtube)
+  YoutubeProvider._(this._client, this._health, this._muxer, this._youtube)
     : _controller = VideoController(_youtube);
 
   /// The app's own client, used to ask the media servers what they serve.
   final HttpClient _client;
 
   final EndpointHealth _health;
+
+  /// What this device can assemble. Which resolutions are worth offering
+  /// depends on it, so it is asked before the qualities are drawn up.
+  final MediaMuxerBridge _muxer;
 
   /// The package's request layer: cookies, consent and the headers YouTube's
   /// pages expect. Shared by the player lookups and the visitor id fetch.
@@ -82,8 +103,13 @@ class YoutubeProvider implements SourceProvider {
     'youtube-nocookie.com',
   };
 
-  /// Qualities offered, best first. More than this is noise in a picker.
-  static const int _maxVideoVariants = 6;
+  /// Qualities offered, best first.
+  ///
+  /// Nine covers everything YouTube publishes, 144p through 4320p. It used to
+  /// be six, which is one short of a video that has 1440p and two short of one
+  /// that has 2160p — those resolutions were being found, probed and then
+  /// dropped off the end of the list.
+  static const int _maxVideoVariants = 9;
 
   /// How many endpoints are asked at once.
   ///
@@ -216,7 +242,11 @@ class YoutubeProvider implements SourceProvider {
 
     final videoId = yt.VideoId(id);
     final deadline = DateTime.now().add(timeout);
-    final answer = await _askFleet(videoId, deadline);
+    // What the device will merge decides which resolutions are worth asking
+    // the media servers about at all, so it is settled before the lookup runs.
+    // One platform call, answered from memory after the first link.
+    final support = await _muxer.support();
+    final answer = await _askFleet(videoId, deadline, support);
 
     final tracks = answer.tracks;
     if (tracks == null) {
@@ -229,66 +259,86 @@ class YoutubeProvider implements SourceProvider {
           );
     }
 
-    return _fold(url, videoId, tracks, answer.details);
+    return _fold(url, videoId, tracks, answer.details, support);
   }
 
   /// Asks the fleet, a wave at a time, and keeps the first answer that names
-  /// streams this device can save.
+  /// the whole video.
   ///
   /// Endpoints are ordered by how they have been answering, so the one that
   /// worked a minute ago leads and one that is refusing is left out of the
   /// early waves. Only when every endpoint has been tried does the package's
   /// own default path get a last word.
-  Future<_Answer> _askFleet(yt.VideoId videoId, DateTime deadline) async {
+  ///
+  /// An answer holding nothing but the ready-mixed 360p file does not stop the
+  /// search: it is kept aside and handed back only if every endpoint left, and
+  /// the last resort, does no better. Settling for one the moment it arrived
+  /// is what used to leave a 4K video offered at 360p and nothing else.
+  Future<_Answer> _askFleet(
+    yt.VideoId videoId,
+    DateTime deadline,
+    MuxSupport support,
+  ) async {
     final ordered = _health.order(_fleet, (endpoint) => endpoint.key);
     _Answer? refusal;
+    _Answer? partial;
 
     for (var start = 0; start < ordered.length; start += _waveSize) {
       final remaining = deadline.difference(DateTime.now());
       if (remaining <= Duration.zero) break;
 
       final wave = ordered.skip(start).take(_waveSize).toList();
-      final answer = await _firstToAnswer(wave, videoId, remaining);
-      if (answer.tracks != null) return answer;
+      final answer = await _firstToAnswer(wave, videoId, remaining, support);
+      if (answer.isComplete) return answer;
+      if (answer.tracks != null) partial ??= answer;
       refusal = _clearer(refusal, answer);
     }
 
     final remaining = deadline.difference(DateTime.now());
     if (remaining > Duration.zero) {
-      final last = await _lastResort(videoId, remaining);
-      if (last.tracks != null) return last;
+      final last = await _lastResort(videoId, remaining, support);
+      if (last.isComplete) return last;
+      if (last.tracks != null) partial ??= last;
       refusal = _clearer(refusal, last);
     }
 
-    return refusal ?? const _Answer.none();
+    return partial ?? refusal ?? const _Answer.none();
   }
 
-  /// Runs one wave and completes as soon as any endpoint in it succeeds.
+  /// Runs one wave and completes as soon as any endpoint in it answers for
+  /// the whole video.
   ///
   /// The endpoints that lose are not cancelled — a player lookup is one small
   /// request with nothing meaningful to abort — but their answers are dropped,
-  /// and what they taught us about the server is kept.
+  /// and what they taught us about the server is kept. A ready-mixed-only
+  /// answer does not end the wave; it is what the wave falls back on when none
+  /// of its endpoints did better.
   Future<_Answer> _firstToAnswer(
     List<_Endpoint> wave,
     yt.VideoId videoId,
     Duration remaining,
+    MuxSupport support,
   ) {
     final settled = Completer<_Answer>();
     _Answer? refusal;
+    _Answer? partial;
     var pending = wave.length;
 
     final budget = remaining < _endpointTimeout ? remaining : _endpointTimeout;
     for (final endpoint in wave) {
       unawaited(
-        _ask(endpoint, videoId, budget).then((answer) {
+        _ask(endpoint, videoId, budget, support).then((answer) {
           if (settled.isCompleted) return;
-          if (answer.tracks != null) {
+          if (answer.isComplete) {
             settled.complete(answer);
             return;
           }
+          if (answer.tracks != null) partial ??= answer;
           refusal = _clearer(refusal, answer);
           pending--;
-          if (pending == 0) settled.complete(refusal ?? const _Answer.none());
+          if (pending == 0) {
+            settled.complete(partial ?? refusal ?? const _Answer.none());
+          }
         }),
       );
     }
@@ -302,6 +352,7 @@ class YoutubeProvider implements SourceProvider {
     _Endpoint endpoint,
     yt.VideoId videoId,
     Duration timeout,
+    MuxSupport support,
   ) async {
     final startedAt = DateTime.now();
     try {
@@ -326,7 +377,7 @@ class YoutubeProvider implements SourceProvider {
       }
 
       final left = timeout - DateTime.now().difference(startedAt);
-      final served = await _verify(named, left);
+      final served = await _verify(named, left, support);
       if (served.isEmpty) {
         // The endpoint named streams its servers will not hand over: as
         // useless as no answer, and worth leaving this endpoint alone for.
@@ -335,8 +386,18 @@ class YoutubeProvider implements SourceProvider {
         return const _Answer.fault();
       }
 
-      _health.recordSuccess(endpoint.key, DateTime.now().difference(startedAt));
-      return _Answer.tracks(served, answer.details);
+      final result = _Answer.tracks(served, answer.details);
+      // Only an endpoint that got the whole video through counts as healthy.
+      // One left holding the ready-mixed 360p file did answer, but it is not
+      // the endpoint that should lead the next lookup, so its standing is left
+      // where it was rather than promoted.
+      if (result.isComplete) {
+        _health.recordSuccess(
+          endpoint.key,
+          DateTime.now().difference(startedAt),
+        );
+      }
+      return result;
     } catch (error) {
       AppLog.warn('YouTube endpoint ${endpoint.key}', error.runtimeType);
       _health.recordFailure(endpoint.key);
@@ -419,7 +480,11 @@ class YoutubeProvider implements SourceProvider {
   }
 
   /// The package's own client sequence, tried once the fleet has nothing left.
-  Future<_Answer> _lastResort(yt.VideoId videoId, Duration timeout) async {
+  Future<_Answer> _lastResort(
+    yt.VideoId videoId,
+    Duration timeout,
+    MuxSupport support,
+  ) async {
     final client = yt.YoutubeExplode();
     try {
       final manifest = await client.videos.streamsClient
@@ -429,7 +494,7 @@ class YoutubeProvider implements SourceProvider {
         for (final stream in manifest.streams) ?_Track.fromStream(stream),
       ];
       if (tracks.isEmpty) return const _Answer.none();
-      final served = await _verify(tracks, timeout);
+      final served = await _verify(tracks, timeout, support);
       if (served.isEmpty) return const _Answer.none();
       return _Answer.tracks(served, const _Details());
     } catch (error) {
@@ -440,14 +505,18 @@ class YoutubeProvider implements SourceProvider {
 
   /// Keeps only the tracks the media servers will actually hand over.
   ///
-  /// Every track the picker could end up offering — the best H.264 rendition
-  /// of each height, the soundtracks from [_audioCandidates], and the
-  /// ready-mixed files if no soundtrack is served — is asked for one byte of
-  /// itself. A track the server refuses is dropped, so a quality is never
+  /// Every track the picker could end up offering — the rendition of each
+  /// height that [_bestPerHeight] chose, the soundtracks from
+  /// [_audioCandidates], and the ready-mixed files if no soundtrack is
+  /// served — is asked for one byte of itself. A track the server refuses is dropped, so a quality is never
   /// shown that would fail the moment the user chose it. The probes run
   /// together and cost one small round trip each.
-  Future<List<_Track>> _verify(List<_Track> tracks, Duration budget) async {
-    final videos = _bestPerHeight(tracks);
+  Future<List<_Track>> _verify(
+    List<_Track> tracks,
+    Duration budget,
+    MuxSupport support,
+  ) async {
+    final videos = _bestPerHeight(tracks, support);
     final heights = videos.keys.toList()..sort((a, b) => b.compareTo(a));
     final audios = _audioCandidates(tracks);
 
@@ -582,10 +651,11 @@ class YoutubeProvider implements SourceProvider {
     yt.VideoId videoId,
     List<_Track> tracks,
     _Details details,
+    MuxSupport support,
   ) {
     final audio = _bestAudio(tracks);
     final variants = <MediaVariant>[
-      ..._videoVariants(tracks, audio),
+      ..._videoVariants(tracks, audio, _bestOpus(tracks), support),
       // A ready-mixed file carries the same soundtrack, and the encoder throws
       // its picture away — so an audio download is still on offer for a video
       // YouTube publishes no separate audio track for.
@@ -642,16 +712,36 @@ class YoutubeProvider implements SourceProvider {
     return muxed.first;
   }
 
-  List<MediaVariant> _videoVariants(List<_Track> tracks, _Track? audio) {
-    if (audio != null) {
-      final best = _bestPerHeight(tracks);
-      if (best.isNotEmpty) {
-        final heights = best.keys.toList()..sort((a, b) => b.compareTo(a));
-        return [
-          for (final height in heights.take(_maxVideoVariants))
-            _pairedVariant(best[height]!, audio),
-        ];
-      }
+  /// YouTube's own Opus soundtrack, which is the sound a WebM resolution is
+  /// paired with.
+  ///
+  /// Nothing is re-encoded on that path: Opus is what a WebM is meant to
+  /// carry, so it is written in exactly as it came down. A WebM has nowhere to
+  /// put an AAC track, which is why a video published without an Opus
+  /// soundtrack has no WebM resolutions on offer.
+  _Track? _bestOpus(List<_Track> tracks) {
+    final own = tracks
+        .where((t) => t.isAudioOnly && t.isDefaultAudio && t.container == _webm)
+        .toList();
+    if (own.isEmpty) return null;
+    own.sort((a, b) => b.bitrate.compareTo(a.bitrate));
+    return own.first;
+  }
+
+  List<MediaVariant> _videoVariants(
+    List<_Track> tracks,
+    _Track? audio,
+    _Track? opus,
+    MuxSupport support,
+  ) {
+    final best = _bestPerHeight(tracks, support);
+    if (best.isNotEmpty) {
+      final heights = best.keys.toList()..sort((a, b) => b.compareTo(a));
+      final paired = <MediaVariant>[
+        for (final height in heights.take(_maxVideoVariants))
+          ?_pairedVariant(best[height]!, audio, opus),
+      ];
+      if (paired.isNotEmpty) return paired;
     }
 
     // Nothing to merge: fall back to the streams that already carry sound.
@@ -660,32 +750,79 @@ class YoutubeProvider implements SourceProvider {
     return muxed.map(_muxedVariant).toList();
   }
 
-  /// One stream per resolution — the highest-bitrate H.264 rendition of each.
-  Map<int, _Track> _bestPerHeight(List<_Track> tracks) {
+  /// One stream per resolution: the best rendition of each that this device
+  /// can turn into a file.
+  ///
+  /// H.264 in an MP4 is preferred wherever YouTube publishes it. Android's
+  /// muxer copies it in beside an AAC soundtrack without re-encoding, and an
+  /// MP4 is what every player and every share target takes. That covers every
+  /// resolution up to 1080p.
+  ///
+  /// Above 1080p there is no H.264 at all: YouTube publishes 1440p and 2160p
+  /// only as VP9 and AV1. Filtering on H.264 alone is what capped the picker
+  /// at 1080p for videos that plainly have more, so where a resolution has no
+  /// H.264 rendition the VP9 one is taken and saved as a WebM. AV1 is left
+  /// alone — every height that has an AV1 rendition has a VP9 one too, and VP9
+  /// is the codec more of these phones decode in hardware.
+  Map<int, _Track> _bestPerHeight(List<_Track> tracks, MuxSupport support) {
     final best = <int, _Track>{};
     for (final track in tracks) {
-      if (!track.isVideoOnly || track.container != _mp4) continue;
-      if (!track.videoCodec.startsWith('avc')) continue;
-      if (track.height <= 0) continue;
+      if (!track.isVideoOnly || track.height <= 0) continue;
+      if (!_isMergeable(track, support)) continue;
 
       final current = best[track.height];
-      if (current == null || track.bitrate > current.bitrate) {
+      if (current == null || _outranks(track, current)) {
         best[track.height] = track;
       }
     }
     return best;
   }
 
-  MediaVariant _pairedVariant(_Track video, _Track audio) {
+  /// Whether a picture track is one this device can pair with a soundtrack.
+  static bool _isMergeable(_Track track, MuxSupport support) {
+    if (track.container == _mp4) return track.videoCodec.startsWith('avc');
+    if (track.container != _webm || !support.webm) return false;
+    // Two spellings of the same codec: the endpoints disagree on whether it is
+    // `vp9` or `vp09.00.41.08`, and a check for one of them silently drops
+    // every high resolution the other endpoint named.
+    return track.videoCodec.startsWith('vp9') ||
+        track.videoCodec.startsWith('vp09');
+  }
+
+  /// Which of two renditions of the same resolution to offer.
+  ///
+  /// The MP4 one whenever there is one. Then the ordinary-range one: YouTube
+  /// publishes an HDR rendition of the same resolution alongside the plain
+  /// one, at a higher bitrate, and it is coded 10 bits deep — which a phone
+  /// without an HDR pipeline either will not decode at all or plays back
+  /// washed out. Between two of the same kind, the one with more picture in
+  /// it.
+  static bool _outranks(_Track candidate, _Track current) {
+    final mp4 = candidate.container == _mp4;
+    if (mp4 != (current.container == _mp4)) return mp4;
+
+    final hdr = candidate.isHdr;
+    if (hdr != current.isHdr) return !hdr;
+
+    return candidate.bitrate > current.bitrate;
+  }
+
+  /// A resolution paired with the soundtrack its container takes, or null when
+  /// this video has none of that sound to pair it with.
+  MediaVariant? _pairedVariant(_Track video, _Track? audio, _Track? opus) {
+    final webm = video.container == _webm;
+    final sound = webm ? opus : audio;
+    if (sound == null) return null;
+
     return MediaVariant(
       id: 'yt-${video.tag}',
       label: _labelFor(video.qualityLabel, video.height),
-      format: MediaFormat.mp4,
+      format: webm ? MediaFormat.webm : MediaFormat.mp4,
       url: video.url,
       heightPx: video.height,
       estimatedBytes: video.bytes,
-      audioUrl: audio.url,
-      audioBytes: audio.bytes,
+      audioUrl: sound.url,
+      audioBytes: sound.bytes,
       // YouTube's media hosts serve byte ranges, which is what lets a paused
       // download pick up where it stopped — and what lets the engine pull the
       // file down several segments at a time.
@@ -772,6 +909,7 @@ class YoutubeProvider implements SourceProvider {
   }
 
   static const String _mp4 = 'mp4';
+  static const String _webm = 'webm';
 }
 
 /// One YouTube player endpoint.
@@ -823,6 +961,22 @@ class _Answer {
   final UnsupportedSource? refusal;
   final _Details details;
   final bool endpointFault;
+
+  /// Whether this answer covers the whole video rather than what was left of
+  /// it.
+  ///
+  /// Every resolution above 360p is built from a picture track and a
+  /// soundtrack the servers hand over separately. An answer with neither — the
+  /// ready-mixed file YouTube still publishes at 360p, and nothing else — is
+  /// worth returning if nothing better turns up, but it must never be what
+  /// ends the search: that is how a video with 1080p and 2160p ends up offered
+  /// at 360p alone.
+  bool get isComplete {
+    final served = tracks;
+    if (served == null) return false;
+    return served.any((track) => track.isVideoOnly) &&
+        served.any((track) => track.isAudioOnly);
+  }
 }
 
 class _Details {
@@ -930,6 +1084,13 @@ class _Track {
 
   /// Whether this is the video's own soundtrack rather than a dub.
   final bool isDefaultAudio;
+
+  /// Whether this is the high-dynamic-range rendition of its resolution.
+  ///
+  /// Read from YouTube's own label rather than the codec string: the endpoints
+  /// disagree on how much of the codec they spell out — one says `vp9` for
+  /// both renditions — but every one of them marks the label `2160p60 HDR`.
+  bool get isHdr => qualityLabel.toUpperCase().contains('HDR');
 
   bool get isAudioOnly => videoCodec.isEmpty && audioCodec.isNotEmpty;
   bool get isVideoOnly => videoCodec.isNotEmpty && audioCodec.isEmpty;

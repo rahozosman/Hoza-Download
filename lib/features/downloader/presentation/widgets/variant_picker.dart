@@ -9,15 +9,22 @@ import '../../../../app/theme/status_visuals.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../data/models/media_option.dart';
 import '../../../../shared/widgets/fade_slide_in.dart';
+import '../../../../shared/widgets/media_thumbnail.dart';
 import '../../../../shared/widgets/press_scale.dart';
 
-/// Media type switch plus the quality tiles for the selected type.
+/// Media type switch plus the tiles for the selected type.
 ///
 /// Only types and variants the source genuinely offers are rendered — a source
 /// with no audio rendition simply has no Audio side to the switch, and the
 /// quality list is never padded with resolutions that would fail. When there
 /// is only one side, the sheet still says which one it is rather than leaving
 /// a silent gap where the switch would have been.
+///
+/// Two kinds of choice live here. A video or a soundtrack is one file in
+/// several renditions, so picking one replaces the last. A post's photos are
+/// several files, and which of them the user wants is not a question with one
+/// answer — so those are shown as the pictures themselves, any number of them
+/// tickable, in [_PhotoGrid]. [multiSelect] is what tells the two apart.
 ///
 /// The selected type carries a hue through the whole block — switch, tiles,
 /// check marks — so the answer to "am I saving the video or just the sound?"
@@ -29,8 +36,10 @@ class VariantPicker extends StatelessWidget {
     required this.selectedType,
     required this.onTypeSelected,
     required this.variants,
-    required this.selectedVariantId,
+    required this.selectedIds,
     required this.onVariantSelected,
+    this.multiSelect = false,
+    this.onToggleAll,
   });
 
   final List<MediaType> availableTypes;
@@ -38,14 +47,28 @@ class VariantPicker extends StatelessWidget {
   final ValueChanged<MediaType> onTypeSelected;
 
   final List<MediaVariant> variants;
-  final String? selectedVariantId;
+
+  /// Everything currently picked. Exactly one id unless [multiSelect].
+  final Set<String> selectedIds;
+
+  /// Tapping a tile. The sheet decides whether that replaces the selection or
+  /// adds to it; this widget only reports the tap.
   final ValueChanged<MediaVariant> onVariantSelected;
+
+  /// Whether any number of these may be picked at once. True only for a post
+  /// with more than one photo in it.
+  final bool multiSelect;
+
+  /// Ticks everything, or clears it when everything is already ticked. Null
+  /// when there is nothing to tick in bulk.
+  final VoidCallback? onToggleAll;
 
   @override
   Widget build(BuildContext context) {
     final palette = context.colors;
     final visuals = MediaVisuals.of(selectedType, palette);
     final hasChoice = availableTypes.length > 1;
+    final allPicked = multiSelect && selectedIds.length == variants.length;
     // A post's photos are a set to pick from, not qualities of one file.
     final heading = switch (selectedType) {
       MediaType.video => 'Quality',
@@ -73,19 +96,41 @@ class VariantPicker extends StatelessWidget {
           children: [
             _TypeBadge(visuals: visuals),
             const SizedBox(width: Gap.xs),
-            Text(
-              heading,
-              style: AppTypography.sectionTitle.copyWith(
-                color: palette.textPrimary,
+            // The heading takes the slack rather than a spacer, so it is the
+            // one thing that gives way when the count and the All button need
+            // the room — on a narrow sheet, and at any text scale.
+            Expanded(
+              child: Text(
+                heading,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppTypography.sectionTitle.copyWith(
+                  color: palette.textPrimary,
+                ),
               ),
             ),
-            const Spacer(),
+            const SizedBox(width: Gap.xs),
+            // With several photos on offer the count has to say how many are
+            // ticked, not how many exist: that number is what the Download
+            // button is about to act on.
             Text(
-              variants.length == 1 ? '1 option' : '${variants.length} options',
+              multiSelect
+                  ? '${selectedIds.length} of ${variants.length}'
+                  : variants.length == 1
+                  ? '1 option'
+                  : '${variants.length} options',
               style: AppTypography.caption.copyWith(
                 color: palette.textTertiary,
               ),
             ),
+            if (multiSelect && onToggleAll != null) ...[
+              const SizedBox(width: Gap.xxs),
+              _ToggleAllButton(
+                label: allPicked ? 'Clear' : 'All',
+                visuals: visuals,
+                onTap: onToggleAll!,
+              ),
+            ],
           ],
         ),
         const SizedBox(height: Gap.sm),
@@ -104,13 +149,21 @@ class VariantPicker extends StatelessWidget {
               alignment: AlignmentDirectional.topStart,
               children: [...previous, ?current],
             ),
-            child: _QualityGrid(
-              key: ValueKey<MediaType>(selectedType),
-              variants: variants,
-              visuals: visuals,
-              selectedVariantId: selectedVariantId,
-              onSelected: onVariantSelected,
-            ),
+            child: multiSelect
+                ? _PhotoGrid(
+                    key: ValueKey<MediaType>(selectedType),
+                    variants: variants,
+                    visuals: visuals,
+                    selectedIds: selectedIds,
+                    onToggled: onVariantSelected,
+                  )
+                : _QualityGrid(
+                    key: ValueKey<MediaType>(selectedType),
+                    variants: variants,
+                    visuals: visuals,
+                    selectedIds: selectedIds,
+                    onSelected: onVariantSelected,
+                  ),
           ),
         ),
       ],
@@ -333,13 +386,13 @@ class _QualityGrid extends StatelessWidget {
     super.key,
     required this.variants,
     required this.visuals,
-    required this.selectedVariantId,
+    required this.selectedIds,
     required this.onSelected,
   });
 
   final List<MediaVariant> variants;
   final MediaVisuals visuals;
-  final String? selectedVariantId;
+  final Set<String> selectedIds;
   final ValueChanged<MediaVariant> onSelected;
 
   @override
@@ -375,7 +428,7 @@ class _QualityGrid extends StatelessWidget {
                     // The list arrives highest-quality first, so the leader is
                     // genuinely the best the source offers — never a guess.
                     best: i == 0 && variants.length > 1,
-                    selected: variants[i].id == selectedVariantId,
+                    selected: selectedIds.contains(variants[i].id),
                     onTap: () => onSelected(variants[i]),
                   ),
                 ),
@@ -471,20 +524,30 @@ class _QualityTile extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    AnimatedDefaultTextStyle(
-                      duration: context.motion(Motion.fast),
-                      curve: Motion.standard,
-                      style: AppTypography.sectionTitle.copyWith(
-                        color: selected ? visuals.tint : palette.textPrimary,
-                        fontWeight: selected
-                            ? FontWeight.w700
-                            : FontWeight.w600,
-                      ),
-                      child: Text(
-                        variant.label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
+                    Row(
+                      children: [
+                        _TileGlyph(visuals: visuals, selected: selected),
+                        const SizedBox(width: Gap.xxs + 1),
+                        Flexible(
+                          child: AnimatedDefaultTextStyle(
+                            duration: context.motion(Motion.fast),
+                            curve: Motion.standard,
+                            style: AppTypography.sectionTitle.copyWith(
+                              color: selected
+                                  ? visuals.tint
+                                  : palette.textPrimary,
+                              fontWeight: selected
+                                  ? FontWeight.w700
+                                  : FontWeight.w600,
+                            ),
+                            child: Text(
+                              variant.label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                     if (detail.isNotEmpty) ...[
                       const SizedBox(height: 2),
@@ -516,12 +579,287 @@ class _QualityTile extends StatelessWidget {
   }
 }
 
+/// Ticks every photo at once, or clears them all.
+///
+/// A post can carry a dozen pictures. Without this, "I want all of them" and
+/// "I want just that one" both cost a tap per photo; with it, either is two
+/// taps from wherever the selection happens to be.
+class _ToggleAllButton extends StatelessWidget {
+  const _ToggleAllButton({
+    required this.label,
+    required this.visuals,
+    required this.onTap,
+  });
+
+  final String label;
+  final MediaVisuals visuals;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      child: PressScale(
+        scale: 0.94,
+        onTap: () {
+          HapticFeedback.selectionClick();
+          onTap();
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: Gap.xs,
+            vertical: Gap.xxs,
+          ),
+          decoration: BoxDecoration(
+            color: visuals.tintSoft,
+            borderRadius: Radii.pillRadius,
+            border: Border.all(color: visuals.tint.withValues(alpha: 0.3)),
+          ),
+          child: Text(
+            label,
+            style: AppTypography.label.copyWith(color: visuals.tint),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The pictures of a post, any number of them tickable.
+///
+/// Shown as the pictures rather than as a list of names, because "Photo 3" is
+/// not something anyone can choose between — the whole question here is which
+/// of these images the user wants, and only the images answer it. Each cell
+/// carries its number as well, so the tick and the file that arrives are
+/// plainly the same thing.
+class _PhotoGrid extends StatelessWidget {
+  const _PhotoGrid({
+    super.key,
+    required this.variants,
+    required this.visuals,
+    required this.selectedIds,
+    required this.onToggled,
+  });
+
+  final List<MediaVariant> variants;
+  final MediaVisuals visuals;
+  final Set<String> selectedIds;
+  final ValueChanged<MediaVariant> onToggled;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Three across on a phone: big enough to tell two photos of the same
+        // scene apart, small enough that a long slideshow does not turn the
+        // sheet into a scroll.
+        final columns = constraints.maxWidth >= 420 ? 4 : 3;
+        final width = (constraints.maxWidth - Gap.xs * (columns - 1)) / columns;
+
+        return Wrap(
+          spacing: Gap.xs,
+          runSpacing: Gap.xs,
+          children: [
+            for (var i = 0; i < variants.length; i++)
+              SizedBox(
+                width: width,
+                child: FadeSlideIn(
+                  index: i,
+                  offset: 10,
+                  step: const Duration(milliseconds: 30),
+                  child: _PhotoTile(
+                    variant: variants[i],
+                    number: i + 1,
+                    visuals: visuals,
+                    selected: selectedIds.contains(variants[i].id),
+                    onTap: () => onToggled(variants[i]),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _PhotoTile extends StatelessWidget {
+  const _PhotoTile({
+    required this.variant,
+    required this.number,
+    required this.visuals,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final MediaVariant variant;
+
+  /// Where this picture comes in the post, counting from one.
+  final int number;
+
+  final MediaVisuals visuals;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.colors;
+
+    return Semantics(
+      button: true,
+      inMutuallyExclusiveGroup: false,
+      selected: selected,
+      label: variant.label,
+      child: PressScale(
+        scale: 0.94,
+        onTap: () {
+          HapticFeedback.selectionClick();
+          onTap();
+        },
+        child: AspectRatio(
+          aspectRatio: 1,
+          child: AnimatedContainer(
+            duration: context.motion(Motion.base),
+            curve: Motion.standard,
+            decoration: BoxDecoration(
+              color: palette.surfaceMuted,
+              borderRadius: Radii.tileRadius,
+              border: Border.all(
+                color: selected ? visuals.tint : palette.border,
+                width: selected ? 2 : 1,
+              ),
+              boxShadow: selected
+                  ? [
+                      BoxShadow(
+                        color: visuals.tint.withValues(alpha: 0.18),
+                        blurRadius: 12,
+                        offset: const Offset(0, 3),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                MediaThumbnail.expand(
+                  mediaType: MediaType.image,
+                  imageUrl: variant.url.toString(),
+                  headers: variant.headers,
+                  borderRadius: Radii.tileRadius,
+                ),
+
+                // A picture nobody has ticked is veiled, so the set that is
+                // about to be saved reads as a group rather than as whichever
+                // cells happen to carry a mark.
+                IgnorePointer(
+                  child: AnimatedOpacity(
+                    duration: context.motion(Motion.base),
+                    curve: Motion.standard,
+                    opacity: selected ? 0 : 0.45,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: palette.surface,
+                        borderRadius: Radii.tileRadius,
+                      ),
+                    ),
+                  ),
+                ),
+
+                Positioned(
+                  top: 4,
+                  left: 4,
+                  child: _PhotoNumber(number: number),
+                ),
+                Positioned(
+                  top: 4,
+                  right: 4,
+                  child: _SelectionMark(
+                    selected: selected,
+                    visuals: visuals,
+                    square: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Which picture of the post this is, on a dark plate so it stays readable on
+/// a photo of any colour.
+class _PhotoNumber extends StatelessWidget {
+  const _PhotoNumber({required this.number});
+
+  final int number;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: Radii.pillRadius,
+      ),
+      child: Text(
+        '$number',
+        style: AppTypography.label.copyWith(color: Colors.white),
+      ),
+    );
+  }
+}
+
+/// The play or note mark every quality tile leads its headline with.
+///
+/// A tile reads `1080p` or `M4A 320 kbps`, and neither says on its own whether
+/// a picture or only sound is about to be saved. The glyph does, at a glance
+/// and without colour: the same play mark and note the switch above uses, so a
+/// tile and the side of the switch it belongs to are plainly the same thing.
+///
+/// It sits on the headline rather than beside the tile because the line under
+/// it — best, container, size — is the one with no width to spare on a
+/// two-column sheet, and a badge in the margin was truncating it.
+class _TileGlyph extends StatelessWidget {
+  const _TileGlyph({required this.visuals, required this.selected});
+
+  final MediaVisuals visuals;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final target = selected ? 1.0 : 0.0;
+
+    // Lerped rather than swapped, so the glyph comes up to full strength with
+    // the tile's own fill instead of snapping ahead of it.
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: target, end: target),
+      duration: context.motion(Motion.fast),
+      curve: Motion.standard,
+      builder: (context, t, _) => Icon(
+        visuals.icon,
+        size: 16,
+        color: visuals.tint.withValues(alpha: 0.62 + 0.38 * t),
+      ),
+    );
+  }
+}
+
 /// The check that lands in a tile as it becomes the chosen one.
 class _SelectionMark extends StatelessWidget {
-  const _SelectionMark({required this.selected, required this.visuals});
+  const _SelectionMark({
+    required this.selected,
+    required this.visuals,
+    this.square = false,
+  });
 
   final bool selected;
   final MediaVisuals visuals;
+
+  /// A rounded square rather than a circle, which is how a tick that may be
+  /// one of several differs from one that replaces the last.
+  final bool square;
 
   @override
   Widget build(BuildContext context) {
@@ -533,10 +871,22 @@ class _SelectionMark extends StatelessWidget {
       width: 20,
       height: 20,
       decoration: BoxDecoration(
-        shape: BoxShape.circle,
+        shape: square ? BoxShape.rectangle : BoxShape.circle,
+        borderRadius: square ? BorderRadius.circular(6) : null,
         gradient: selected ? visuals.gradient : null,
+        // Over a photo the empty mark needs a ground of its own; on a tile it
+        // sits on the tile's fill and needs none.
+        color: selected
+            ? null
+            : square
+            ? Colors.black.withValues(alpha: 0.35)
+            : null,
         border: Border.all(
-          color: selected ? Colors.transparent : palette.borderStrong,
+          color: selected
+              ? Colors.transparent
+              : square
+              ? Colors.white
+              : palette.borderStrong,
           width: 1.4,
         ),
       ),
@@ -559,19 +909,44 @@ class _SelectionMark extends StatelessWidget {
 ///
 /// Says "size unknown" rather than guessing when the source did not report a
 /// length — the download still works, the number just is not available yet.
+/// A set of photos is summed the same way, and the sum is unknown as soon as
+/// any one of them is: a total that quietly left a file out would read as a
+/// smaller download than the one about to start.
 class EstimatedSizeRow extends StatelessWidget {
-  const EstimatedSizeRow({super.key, required this.variant});
+  const EstimatedSizeRow({super.key, required this.selection});
 
-  final MediaVariant? variant;
+  /// What is ticked. Null while the link is still being read, which is not
+  /// the same as ticked nothing.
+  final List<MediaVariant>? selection;
+
+  /// What the whole selection weighs once written, or null when any part of
+  /// it did not report a length.
+  static int? _weight(List<MediaVariant> chosen) {
+    var total = 0;
+    for (final variant in chosen) {
+      final bytes = variant.savedBytes;
+      if (bytes == null) return null;
+      total += bytes;
+    }
+    return total;
+  }
+
+  static String _describe(List<MediaVariant> chosen) {
+    final format = chosen.first.format.label;
+    return chosen.length == 1
+        ? 'Saves as $format'
+        : 'Saves ${chosen.length} files as $format';
+  }
 
   @override
   Widget build(BuildContext context) {
     final palette = context.colors;
-    final selected = variant;
-    final bytes = selected?.savedBytes;
+    final chosen = selection;
+    final empty = chosen == null || chosen.isEmpty;
+    final bytes = empty ? null : _weight(chosen);
 
     final visuals = MediaVisuals.of(
-      selected?.mediaType ?? MediaType.video,
+      chosen?.firstOrNull?.mediaType ?? MediaType.video,
       palette,
     );
 
@@ -590,7 +965,7 @@ class EstimatedSizeRow extends StatelessWidget {
       child: Row(
         children: [
           Icon(
-            selected == null
+            empty
                 ? Icons.search_rounded
                 : bytes == null
                 ? Icons.help_outline_rounded
@@ -601,11 +976,14 @@ class EstimatedSizeRow extends StatelessWidget {
           const SizedBox(width: Gap.xs),
           Expanded(
             child: Text(
-              // The bar is on screen before the link has been read, so it has
-              // to have something honest to say at that point too.
-              selected == null
+              // The bar is on screen before the link has been read, so it
+              // has to have something honest to say at that point too — and
+              // again once a photo set has been cleared.
+              chosen == null
                   ? 'Checking link…'
-                  : 'Saves as ${selected.format.label}',
+                  : chosen.isEmpty
+                  ? 'Nothing selected'
+                  : _describe(chosen),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: AppTypography.caption.copyWith(
@@ -626,12 +1004,15 @@ class EstimatedSizeRow extends StatelessWidget {
               ),
             ),
             child: Text(
-              switch ((selected, bytes)) {
-                (null, _) => '—',
+              switch ((empty, bytes)) {
+                (true, _) => '—',
                 (_, null) => 'Size unknown',
                 (_, final int size) => '~ ${Formatters.bytes(size)}',
               },
-              key: ValueKey<String>('${selected?.id}|${bytes ?? -1}'),
+              key: ValueKey<String>(
+                '${chosen?.length ?? -1}|${chosen?.firstOrNull?.id}'
+                '|${bytes ?? -1}',
+              ),
               style: AppTypography.metric.copyWith(color: palette.textPrimary),
             ),
           ),

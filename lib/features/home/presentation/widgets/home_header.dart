@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../../../../app/theme/app_colors.dart';
 import '../../../../app/theme/app_dimens.dart';
-import '../../../../app/theme/app_motion.dart';
 import '../../../../app/theme/app_typography.dart';
 import '../../../../core/constants/app_info.dart';
 import '../../../../core/utils/formatters.dart';
@@ -36,13 +35,15 @@ class HomeHeader extends StatelessWidget {
           children: [
             // Keyed so the splash's mark can land exactly here, and hidden
             // while it is still on its way — otherwise there would be two.
+            //
+            // The return is instant rather than a fade: the flying copy is
+            // still drawn on top of this, in this exact spot, for the frame
+            // the swap happens on. Fading in underneath it would only show as
+            // the mark going pale once the copy had gone.
             ValueListenableBuilder<bool>(
               valueListenable: FlightTargets.homeMarkInFlight,
-              builder: (context, inFlight, child) => AnimatedOpacity(
-                opacity: inFlight ? 0 : 1,
-                duration: context.motion(Motion.fast),
-                child: child,
-              ),
+              builder: (context, inFlight, child) =>
+                  Opacity(opacity: inFlight ? 0 : 1, child: child),
               child: SizedBox(
                 key: FlightTargets.homeMark,
                 width: _markSize,
