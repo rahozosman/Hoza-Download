@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "platforms": {
     "tiktok": { "enabled": true },
     "instagram": { "enabled": true },
@@ -9,8 +9,9 @@
   "extractors": {
     "tiktok": [
       { "pattern": "\"playAddr\"\\s*:\\s*\"([^\"]+)\"", "label": "Original" },
-      { "pattern": "\"downloadAddr\"\\s*:\\s*\"([^\"]+)\"", "label": "With watermark" },
-      { "pattern": "\"PlayAddr\"\\s*:\\s*\\{[^{}]{0,300}?\"UrlList\"\\s*:\\s*\\[\\s*\"([^\"]+)\"", "label": "Alternate" }
+      { "pattern": "\"playAddrH264\"\\s*:\\s*\"([^\"]+)\"", "label": "Original" },
+      { "pattern": "\"PlayAddr\"\\s*:\\s*\\{[^{}]{0,300}?\"UrlList\"\\s*:\\s*\\[\\s*\"([^\"]+)\"", "label": "Alternate" },
+      { "pattern": "\"play_addr\"\\s*:\\s*\\{[^{}]{0,400}?\"url_list\"\\s*:\\s*\\[\\s*\"([^\"]+)\"", "label": "Alternate" }
     ],
     "instagram": [
       { "pattern": "\"video_url\\\\?\"\\s*:\\s*\\\\?\"([^\"]+?)\\\\?\"", "label": "Original" },

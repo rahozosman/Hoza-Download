@@ -50,15 +50,22 @@ class ExtractorCatalog {
 
   static const ExtractorCatalog builtIn = ExtractorCatalog({
     // TikTok hydrates its player from a JSON blob in the page. `playAddr` is
-    // the file the site itself plays; `downloadAddr` is the one its own
-    // "Save video" hands out, which carries the TikTok watermark. Only the
-    // player's own address list is read: a slideshow's pictures come with
-    // `urlList`s of their own, and those are photos, not renditions.
+    // the file the site itself plays, clean. `downloadAddr` — the file its
+    // own "Save video" hands out, with the poster's @name and the TikTok logo
+    // burned into the picture — is deliberately not read: nobody saving a
+    // video wants the stamp, and the provider drops a stamped address even
+    // when an older cached config still names it. Only the player's own
+    // address lists are read: a slideshow's pictures come with `urlList`s of
+    // their own, and those are photos, not renditions.
     PlatformNames.tiktok: [
       ExtractorPattern(r'"playAddr"\s*:\s*"([^"]+)"', 'Original'),
-      ExtractorPattern(r'"downloadAddr"\s*:\s*"([^"]+)"', 'With watermark'),
+      ExtractorPattern(r'"playAddrH264"\s*:\s*"([^"]+)"', 'Original'),
       ExtractorPattern(
         r'"PlayAddr"\s*:\s*\{[^{}]{0,300}?"UrlList"\s*:\s*\[\s*"([^"]+)"',
+        'Alternate',
+      ),
+      ExtractorPattern(
+        r'"play_addr"\s*:\s*\{[^{}]{0,400}?"url_list"\s*:\s*\[\s*"([^"]+)"',
         'Alternate',
       ),
     ],

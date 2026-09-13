@@ -62,6 +62,8 @@ class SettingsController extends Notifier<AppSettings> {
   void setQualityPreference(QualityPreference preference) =>
       _apply(state.copyWith(qualityPreference: preference));
 
+  void setTiktokHd(bool value) => _apply(state.copyWith(tiktokHd: value));
+
   void setWifiOnly(bool value) => _apply(state.copyWith(wifiOnly: value));
 
   void setAutoStart(bool value) =>

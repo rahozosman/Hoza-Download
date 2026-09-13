@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../data/providers/settings_provider.dart';
 import '../../../services/config/remote_config.dart';
 import '../../../services/networking/http_client_provider.dart';
 import '../../../services/platform/media_muxer.dart';
@@ -209,7 +210,14 @@ final sourceRegistryProvider = Provider<SourceRegistry>((ref) {
       // which also makes it the last resort for a link a specialist could not
       // read.
       YoutubeProvider(client, health, ref.watch(mediaMuxerProvider)),
-      SocialMediaProvider(client, health, catalog: config.extractors),
+      SocialMediaProvider(
+        client,
+        health,
+        catalog: config.extractors,
+        // Watched, so flipping the switch builds a fresh registry — and with
+        // it an empty cache, so no answer found the other way is handed out.
+        tiktokHd: ref.watch(settingsProvider.select((s) => s.tiktokHd)),
+      ),
       DirectMediaProvider(client),
       PageMediaProvider(client),
     ],

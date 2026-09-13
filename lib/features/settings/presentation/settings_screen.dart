@@ -113,6 +113,17 @@ class SettingsScreen extends ConsumerWidget {
                       labelOf: (preference) => preference.label,
                       onSelected: controller.setQualityPreference,
                     ),
+                    // Says who sees the link, not just what it buys: turning
+                    // it on sends TikTok links to a service outside TikTok.
+                    SettingsSwitchRow(
+                      icon: Icons.hd_outlined,
+                      title: 'TikTok HD (1080p)',
+                      subtitle:
+                          'Finds HD through tikwm.com, which sees the TikTok '
+                          'links you download. Off: 576p from TikTok only.',
+                      value: settings.tiktokHd,
+                      onChanged: controller.setTiktokHd,
+                    ),
                     SettingsChoiceRow<int>(
                       icon: Icons.layers_outlined,
                       title: 'Concurrent downloads',
@@ -300,8 +311,10 @@ class SettingsScreen extends ConsumerWidget {
         SizedBox(height: Gap.sm),
         Text(
           'Hoza Download keeps your download history on this device only. '
-          'It has no accounts, no cloud sync and no analytics, and it never '
-          'uploads the links you paste or share.',
+          'It has no accounts, no cloud sync and no analytics. A link you '
+          'paste or share goes only to the site it came from — except TikTok '
+          'links while TikTok HD is on, which also go to tikwm.com to find '
+          'the HD file.',
         ),
         SizedBox(height: Gap.sm),
         Text(

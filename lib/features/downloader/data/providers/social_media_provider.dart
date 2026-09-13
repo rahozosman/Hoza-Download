@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data' show BytesBuilder;
 
 import '../../../../core/utils/app_log.dart';
 import '../../../../core/utils/media_titles.dart';
@@ -24,6 +26,13 @@ import 'page_media_scraper.dart';
 /// or carousel and a Facebook photo each leave their pictures in the page,
 /// and every one of them is offered as its own download.
 ///
+/// A video is offered at the highest quality the platform publishes, not
+/// only the one file its page happens to name: TikTok's embeddable player
+/// lists heavier encodes than its phone page, and Instagram keeps its best
+/// rendition in a DASH manifest, as separate picture and sound tracks that
+/// are merged once both are down. TikTok's stamped "Save video" file is
+/// never offered at all.
+///
 /// These platforms hand a *different page* to each kind of client, and only
 /// some of those pages carry the media at all: TikTok answers a desktop agent
 /// with a placeholder, and Meta's sites answer one with an error. So each post
@@ -38,11 +47,18 @@ class SocialMediaProvider implements SourceProvider {
     this._client,
     this._health, {
     ExtractorCatalog catalog = ExtractorCatalog.builtIn,
+    this.tiktokHd = false,
     // ignore: prefer_initializing_formals
   }) : _catalog = catalog;
 
   final HttpClient _client;
   final EndpointHealth _health;
+
+  /// Whether TikTok's HD file is looked up through tikwm.com.
+  ///
+  /// Off unless the user's setting turns it on: the lookup sends the post's
+  /// link to a service outside TikTok, which nothing does without asking.
+  final bool tiktokHd;
 
   /// Where each platform keeps its video URLs — the built-in lists, or the
   /// remote config's replacements once it has been fetched.
@@ -106,6 +122,10 @@ class SocialMediaProvider implements SourceProvider {
       (route) => _routeKey(site, route),
     );
 
+    // TikTok's player API is asked alongside the page rather than after it,
+    // so the heavier encodes it lists cost the lookup no extra wait.
+    final renditions = site == _Site.tiktok ? _tiktokRenditions(url) : null;
+
     UnsupportedSource? refusal;
 
     for (var start = 0; start < routes.length; start += _waveSize) {
@@ -114,7 +134,7 @@ class SocialMediaProvider implements SourceProvider {
 
       final found = result.attempt;
       if (found != null) {
-        final built = await _build(site, found);
+        final built = await _build(site, found, renditions);
         if (built is ResolvedMedia) return built;
         // The page named the file but its server would not hand it over down
         // this route; another route may carry a session the server accepts.
@@ -146,8 +166,19 @@ class SocialMediaProvider implements SourceProvider {
     UnsupportedReason.noProvider => 0,
   };
 
+  /// How long a page with only the single file waits for a sibling route
+  /// that may carry the platform's quality ladder.
+  static const Duration _ladderGrace = Duration(seconds: 4);
+
   /// Runs one wave of routes and completes as soon as one of them returns a
   /// page with media in it.
+  ///
+  /// On a platform that keeps its best quality in a manifest only some of its
+  /// pages carry, a page without one is held for a moment while the rest of
+  /// the wave is still out: Instagram's embed page tends to answer first with
+  /// only the capped single file, and its post page a beat later with the
+  /// whole ladder. The wait is bounded, so a slow sibling never costs the
+  /// post.
   ///
   /// The routes that lose are left to finish quietly; their answers are
   /// dropped, but what they said about the platform is remembered.
@@ -159,18 +190,33 @@ class SocialMediaProvider implements SourceProvider {
     final found = Completer<_WaveResult>();
     var pending = wave.length;
     UnsupportedSource? refusal;
+    _PageWithMedia? held;
+    Timer? grace;
+
+    void settle(_WaveResult result) {
+      grace?.cancel();
+      if (!found.isCompleted) found.complete(result);
+    }
 
     for (final route in wave) {
       unawaited(
         _attempt(site, url, route).then((attempt) {
-          if (attempt is _PageWithMedia && !found.isCompleted) {
-            found.complete(_WaveResult(attempt: attempt));
+          pending--;
+          if (attempt is _PageWithMedia) {
+            if (attempt.adaptive || !site.publishesAdaptiveStreams) {
+              settle(_WaveResult(attempt: attempt));
+            } else if (held == null) {
+              held = attempt;
+              grace = Timer(
+                _ladderGrace,
+                () => settle(_WaveResult(attempt: held)),
+              );
+            }
           } else if (attempt is _PageRefused) {
             refusal = _clearer(refusal, attempt.refusal);
           }
-          pending--;
-          if (pending == 0 && !found.isCompleted) {
-            found.complete(_WaveResult(refusal: refusal));
+          if (pending == 0) {
+            settle(_WaveResult(attempt: held, refusal: refusal));
           }
         }),
       );
@@ -368,8 +414,18 @@ class SocialMediaProvider implements SourceProvider {
       if (videos.length >= _maxCandidates) return;
       if (!seen.add(url)) return;
       if (MediaFormats.isManifest(url)) return;
+      // A stamped rendition is never offered, not even as a last resort: a
+      // video with someone else's @name sliding across it is not the video
+      // anyone asked to save. An older cached config may still name one.
+      if (_isWatermarked(label, url)) return;
       videos.add(_Candidate(url, label, MediaType.video));
     }
+
+    // The platform's quality ladder, where the page publishes one, ahead of
+    // the single files: it is where the highest quality lives.
+    final ladder = site.publishesAdaptiveStreams
+        ? _adaptiveRenditions(html, pageUrl)
+        : const <_Candidate>[];
 
     for (final extractor in extractors) {
       for (final match in extractor.pattern.allMatches(html)) {
@@ -390,7 +446,7 @@ class SocialMediaProvider implements SourceProvider {
       html,
       pageUrl,
       scraped,
-      hasVideo: videos.isNotEmpty,
+      hasVideo: videos.isNotEmpty || ladder.isNotEmpty,
     )) {
       if (photos.length >= _maxImages) break;
       if (!seenFiles.add(_fileKey(photo.url))) continue;
@@ -398,6 +454,7 @@ class SocialMediaProvider implements SourceProvider {
     }
 
     return [
+      ...ladder,
       ...videos,
       for (var index = 0; index < photos.length; index++)
         _Candidate(
@@ -408,6 +465,447 @@ class SocialMediaProvider implements SourceProvider {
         ),
     ];
   }
+
+  /// Upper bound on how many rungs of a quality ladder are offered per post.
+  static const int _maxRenditions = 4;
+
+  /// The quality ladder a page's DASH manifest publishes: each picture size
+  /// once, at the highest bitrate published for it, paired with the best
+  /// soundtrack.
+  ///
+  /// Instagram keeps its best rendition here and only here — the single file
+  /// it also publishes is capped below what the manifest carries. Every track
+  /// in the manifest is a whole file at its own address, so nothing is
+  /// streamed: the picture and the sound are fetched and merged, as YouTube's
+  /// are. Tracks Android's MP4 muxer will not take (VP9, AV1) are passed over,
+  /// and a manifest without a soundtrack offers nothing, since the single
+  /// file is then already the whole post.
+  static List<_Candidate> _adaptiveRenditions(String html, Uri pageUrl) {
+    final manifest = _dashManifest(html);
+    if (manifest == null) return const [];
+
+    ({Uri url, int bandwidth})? sound;
+    final pictures = <int, ({Uri url, int bandwidth, String codecs})>{};
+
+    for (final match in _dashRepresentation.allMatches(manifest)) {
+      final attributes = {
+        for (final attribute in _xmlAttribute.allMatches(match.group(1)!))
+          attribute.group(1)!: attribute.group(2)!,
+      };
+      final url = _absolute(
+        _dashBaseUrl.firstMatch(match.group(2)!)?.group(1),
+        pageUrl,
+      );
+      if (url == null) continue;
+
+      final mimeType = (attributes['mimeType'] ?? '').toLowerCase();
+      final codecs = (attributes['codecs'] ?? '').toLowerCase();
+      final bandwidth = int.tryParse(attributes['bandwidth'] ?? '') ?? 0;
+
+      if (mimeType.startsWith('audio/')) {
+        if (!codecs.startsWith('mp4a')) continue;
+        if (sound == null || bandwidth > sound.bandwidth) {
+          sound = (url: url, bandwidth: bandwidth);
+        }
+      } else if (mimeType.startsWith('video/')) {
+        if (!_muxableVideoCodecs.hasMatch(codecs)) continue;
+        final side = _shortSide(
+          int.tryParse(attributes['width'] ?? ''),
+          int.tryParse(attributes['height'] ?? ''),
+        );
+        if (side == null) continue;
+        final kept = pictures[side];
+        if (kept == null || bandwidth > kept.bandwidth) {
+          pictures[side] = (url: url, bandwidth: bandwidth, codecs: codecs);
+        }
+      }
+    }
+
+    final soundtrack = sound?.url;
+    if (soundtrack == null || pictures.isEmpty) return const [];
+
+    final sides = pictures.keys.toList()..sort((a, b) => b.compareTo(a));
+    return [
+      for (final side in sides.take(_maxRenditions))
+        _Candidate(
+          pictures[side]!.url,
+          _qualityLabel(side, codec: pictures[side]!.codecs),
+          MediaType.video,
+          heightPx: side,
+          audioUrl: soundtrack,
+        ),
+    ];
+  }
+
+  /// The DASH manifest a page carries, as markup, or null when it has none.
+  ///
+  /// It sits in the page as a JSON string — escaped once in the post page and
+  /// twice in the embed page, which keeps its JSON inside a JSON string — so
+  /// layers are peeled off until the manifest reads as markup again.
+  static String? _dashManifest(String html) {
+    final at = html.indexOf('video_dash_manifest');
+    if (at < 0) return null;
+    final stop = at + _maxManifestChars;
+    var text = html.substring(at, stop < html.length ? stop : html.length);
+    for (var layer = 0; layer < 3 && !text.contains('</MPD>'); layer++) {
+      text = _jsonUnescape(text);
+    }
+    final start = text.indexOf('<MPD');
+    final end = start < 0 ? -1 : text.indexOf('</MPD>', start);
+    return end < 0 ? null : text.substring(start, end);
+  }
+
+  /// A manifest with a full ladder runs to about ten thousand characters
+  /// escaped; this leaves room for a much longer one.
+  static const int _maxManifestChars = 96 * 1024;
+
+  static final RegExp _dashRepresentation = RegExp(
+    r'<Representation\b([^>]*)>([\s\S]*?)</Representation>',
+  );
+  static final RegExp _xmlAttribute = RegExp(r'([A-Za-z:]+)="([^"]*)"');
+  static final RegExp _dashBaseUrl = RegExp(r'<BaseURL>([^<]+)</BaseURL>');
+
+  /// Video codecs Android's MP4 muxer copies as they are.
+  static final RegExp _muxableVideoCodecs = RegExp(r'^(?:avc[13]|hvc1|hev1)');
+
+  /// A rendition's size as people name it: its short side, so a portrait
+  /// video 1080 pixels wide reads as the 1080p it is, and a 1080p quality
+  /// preference finds it. Null when either dimension is missing.
+  static int? _shortSide(int? width, int? height) {
+    if (width == null || height == null || width <= 0 || height <= 0) {
+      return null;
+    }
+    return width < height ? width : height;
+  }
+
+  /// `1080p`, with the codec named only when it is the one some players
+  /// still stumble on.
+  static String _qualityLabel(int shortSide, {String? codec}) {
+    final name = (codec ?? '').toLowerCase();
+    final hevc =
+        name.startsWith('hvc1') ||
+        name.startsWith('hev1') ||
+        name.contains('265') ||
+        name.contains('hevc') ||
+        name.contains('bytevc1');
+    return hevc ? '${shortSide}p HEVC' : '${shortSide}p';
+  }
+
+  /// How long TikTok's player API may take before the post is offered
+  /// without it.
+  static const Duration _playerApiTimeout = Duration(seconds: 8);
+
+  /// The player API's answer for one post is a few dozen kilobytes.
+  static const int _maxPlayerApiBytes = 1024 * 1024;
+
+  static final Uri _tiktokPlayerApi = Uri.https(
+    'www.tiktok.com',
+    '/player/api/v1/items',
+  );
+
+  /// The post ID in a TikTok video link: `/@name/video/7…` or `/v/7….html`.
+  static final RegExp _tiktokPostId = RegExp(r'/(?:video|v)/(\d{8,})');
+
+  /// How long the tikwm.com lookup may take — its answer, then the front of
+  /// the HD file it names — before the post is offered without it.
+  static const Duration _tikwmTimeout = Duration(seconds: 12);
+
+  static final Uri _tikwmApi = Uri.https('www.tikwm.com', '/api/');
+
+  /// How much of a file is read to find its picture size. TikTok writes the
+  /// index that holds it at the front of the file, well inside this.
+  static const int _mp4HeaderBytes = 256 * 1024;
+
+  /// Every clean rendition of a TikTok video post found beyond its page: the
+  /// HD file through tikwm.com when [tiktokHd] allows it, then the files
+  /// TikTok's embeddable player lists. Empty when the link names no video
+  /// post or neither answers; the page's own address still stands either way.
+  ///
+  /// The page TikTok serves a phone names one file, and it is often the
+  /// lightest encode the post has. The player other sites embed TikToks with
+  /// is fed from an API that answers without an account and lists the files
+  /// that player may choose between — a heavier, sharper encode among them
+  /// more often than not. They are the player's own files, so none carries
+  /// the stamp "Save video" burns in. None of TikTok's own answers goes above
+  /// 576p for a visitor without an account; only tikwm.com reaches the HD
+  /// file.
+  Future<List<_Candidate>> _tiktokRenditions(Uri url) async {
+    final id = _tiktokPostId.firstMatch(url.path)?.group(1);
+    if (id == null) return const [];
+    final (hd, player) = await (
+      tiktokHd
+          ? _guarded('tiktok:tikwm', _tikwmTimeout, () => _readTikwm(url), null)
+          : Future<_Candidate?>.value(),
+      _guarded(
+        'tiktok:player',
+        _playerApiTimeout,
+        () => _readTiktokPlayer(id),
+        const <_Candidate>[],
+      ),
+    ).wait;
+    return [?hd, ...player];
+  }
+
+  /// [work], bounded in time and never throwing: a lookup beyond the page only
+  /// ever adds renditions, so its failure is logged and passed over.
+  static Future<T> _guarded<T>(
+    String tag,
+    Duration timeout,
+    Future<T> Function() work,
+    T fallback,
+  ) async {
+    try {
+      return await work().timeout(timeout);
+    } catch (error) {
+      AppLog.warn(tag, error.runtimeType);
+      return fallback;
+    }
+  }
+
+  Future<List<_Candidate>> _readTiktokPlayer(String id) async {
+    final request = await _client.getUrl(
+      _tiktokPlayerApi.replace(queryParameters: {'item_ids': id}),
+    );
+    _askForJson(request);
+    request.headers
+      ..set(HttpHeaders.userAgentHeader, BrowserProfile.userAgent)
+      ..set(HttpHeaders.refererHeader, _Site.tiktok.referer);
+    final answer = await _readJson(await request.close(), 'tiktok:player');
+    final renditions = _tiktokPlayerRenditions(answer);
+    AppLog.warn('tiktok:player', '${renditions.length} renditions');
+    return renditions;
+  }
+
+  /// TikTok's HD file for a post, found through tikwm.com, labelled with the
+  /// size the file itself declares. Null when the post has no encode above
+  /// the one TikTok already hands out, or the service does not answer.
+  ///
+  /// tikwm.com holds the kind of session TikTok serves its HD encode to, and
+  /// answers with addresses on TikTok's own CDN, so the bytes still come from
+  /// TikTok. Only the post's link is sent, and the watermarked address in the
+  /// answer is never read.
+  Future<_Candidate?> _readTikwm(Uri url) async {
+    final form = utf8.encode(
+      'url=${Uri.encodeQueryComponent(url.toString())}&hd=1',
+    );
+    final request = await _client.postUrl(_tikwmApi);
+    _askForJson(request);
+    request.headers
+      ..set(HttpHeaders.userAgentHeader, BrowserProfile.userAgent)
+      ..set(
+        HttpHeaders.contentTypeHeader,
+        'application/x-www-form-urlencoded; charset=utf-8',
+      );
+    request.contentLength = form.length;
+    request.add(form);
+
+    final address = _tikwmHdAddress(
+      await _readJson(await request.close(), 'tiktok:tikwm'),
+    );
+    if (address == null) return null;
+
+    final picture = await _mp4Picture(
+      address,
+      BrowserProfile.mediaHeaders(referer: _Site.tiktok.referer),
+    );
+    if (picture == null) {
+      AppLog.warn('tiktok:tikwm', 'HD file did not declare its size');
+      return null;
+    }
+    AppLog.warn('tiktok:tikwm', 'HD ${picture.side}p ${picture.codec}');
+    return _Candidate(
+      address,
+      _qualityLabel(picture.side, codec: picture.codec),
+      MediaType.video,
+      heightPx: picture.side,
+    );
+  }
+
+  /// The HD address in tikwm.com's answer, when it names a different file
+  /// from the one TikTok already hands out: for a post with no better encode
+  /// the service names the ordinary file as its HD one, and the two sizes it
+  /// reports then match.
+  static Uri? _tikwmHdAddress(Object? answer) {
+    if (answer is! Map) return null;
+    final data = answer['data'];
+    if (answer['code'] != 0 || data is! Map) {
+      AppLog.warn('tiktok:tikwm', 'no answer: ${answer['msg']}');
+      return null;
+    }
+    final hdBytes = _intOf(data['hd_size']);
+    if (hdBytes == null || hdBytes == _intOf(data['size'])) return null;
+    final raw = data['hdplay'];
+    final address = raw is String ? _absolute(raw, _tikwmApi) : null;
+    if (address == null || _isWatermarked('', address)) return null;
+    return address;
+  }
+
+  /// The picture size and codec an MP4 file declares at its front, or null
+  /// when the front does not say.
+  Future<({int side, String codec})?> _mp4Picture(
+    Uri url,
+    Map<String, String> headers,
+  ) async {
+    final request = await _client.getUrl(url);
+    headers.forEach(request.headers.set);
+    request.headers.set(
+      HttpHeaders.rangeHeader,
+      'bytes=0-${_mp4HeaderBytes - 1}',
+    );
+    final response = await request.close();
+    if (response.statusCode != HttpStatus.ok &&
+        response.statusCode != HttpStatus.partialContent) {
+      await response.drain<void>();
+      return null;
+    }
+    final front = BytesBuilder(copy: false);
+    await for (final chunk in response) {
+      front.add(chunk);
+      if (front.length >= _mp4HeaderBytes) break;
+    }
+    return _mp4PictureOf(front.takeBytes());
+  }
+
+  /// Reads the track header (`tkhd`) boxes: each ends with its track's width
+  /// and height in 16.16 fixed point, which are zero for a sound track.
+  static ({int side, String codec})? _mp4PictureOf(List<int> data) {
+    int u32(int at) =>
+        (data[at] << 24) | (data[at + 1] << 16) | (data[at + 2] << 8) |
+        data[at + 3];
+
+    for (var at = 4; at + 4 <= data.length; at++) {
+      // `tkhd`
+      if (data[at] != 0x74 ||
+          data[at + 1] != 0x6B ||
+          data[at + 2] != 0x68 ||
+          data[at + 3] != 0x64) {
+        continue;
+      }
+      final start = at - 4;
+      final size = u32(start);
+      if (size < 84 || size > 200 || start + size > data.length) continue;
+      final side = _shortSide(
+        u32(start + size - 8) >> 16,
+        u32(start + size - 4) >> 16,
+      );
+      if (side == null) continue;
+      final text = latin1.decode(data);
+      final hevc = text.contains('hvc1') || text.contains('hev1');
+      return (side: side, codec: hevc ? 'hvc1' : 'avc1');
+    }
+    return null;
+  }
+
+  /// Asks for an answer that can be read: the shared client leaves bodies
+  /// compressed, which is right for media and wrong for JSON.
+  static void _askForJson(HttpClientRequest request) => request.headers
+    ..set(HttpHeaders.acceptHeader, 'application/json')
+    ..set(HttpHeaders.acceptEncodingHeader, 'identity');
+
+  /// A JSON answer, decoded, or null when it is not a 200 or runs too large.
+  static Future<Object?> _readJson(
+    HttpClientResponse response,
+    String tag,
+  ) async {
+    if (response.statusCode != HttpStatus.ok) {
+      await response.drain<void>();
+      AppLog.warn(tag, 'HTTP ${response.statusCode}');
+      return null;
+    }
+    final body = BytesBuilder(copy: false);
+    await for (final chunk in response) {
+      body.add(chunk);
+      if (body.length > _maxPlayerApiBytes) return null;
+    }
+    List<int> bytes = body.takeBytes();
+    // Told apart by its first two bytes rather than by the header: TikTok's
+    // own APIs have been seen sending gzip without saying so.
+    if (bytes.length > 1 && bytes[0] == 0x1f && bytes[1] == 0x8b) {
+      bytes = gzip.decode(bytes);
+    }
+    return jsonDecode(utf8.decode(bytes));
+  }
+
+  /// The renditions in the player API's answer: the file the player opens
+  /// on, sized by the post's own dimensions, then each encode it lists. The
+  /// API is undocumented, so every field is checked rather than trusted.
+  static List<_Candidate> _tiktokPlayerRenditions(Object? answer) {
+    if (answer is! Map) return const [];
+    final items = answer['items'];
+    if (items is! List || items.isEmpty) return const [];
+    final item = items.first;
+    final info = item is Map ? item['video_info'] : null;
+    if (info is! Map) return const [];
+
+    final renditions = <_Candidate>[];
+    void add(Object? urls, Object? width, Object? height, {Object? codec}) {
+      if (urls is! List || renditions.length >= _maxRenditions) return;
+      final addresses = [
+        for (final raw in urls)
+          if (raw is String) ?_absolute(raw, _tiktokPlayerApi),
+      ];
+      if (addresses.isEmpty) return;
+      final side = _shortSide(_intOf(width), _intOf(height));
+      renditions.add(
+        _Candidate(
+          addresses.first,
+          side == null
+              ? 'Original'
+              : _qualityLabel(side, codec: codec is String ? codec : null),
+          MediaType.video,
+          mirrors: addresses.skip(1).toList(),
+          heightPx: side,
+        ),
+      );
+    }
+
+    final meta = info['meta'];
+    add(
+      info['url_list'],
+      meta is Map ? meta['width'] : null,
+      meta is Map ? meta['height'] : null,
+    );
+    final profiles = info['profiles'];
+    if (profiles is List) {
+      for (final profile in profiles) {
+        if (profile is! Map) continue;
+        final address = profile['play_addr'];
+        if (address is! Map) continue;
+        add(
+          address['url_list'],
+          address['width'],
+          address['height'],
+          codec: profile['codec_type'],
+        );
+      }
+    }
+    return renditions;
+  }
+
+  static int? _intOf(Object? value) => switch (value) {
+    final int number => number,
+    final num number => number.toInt(),
+    final String text => int.tryParse(text),
+    _ => null,
+  };
+
+  /// Whether an address serves the post with the platform's stamp burned
+  /// into the picture — on TikTok, the poster's @name sliding across the
+  /// video and the TikTok logo in the corner.
+  ///
+  /// TikTok publishes every video twice: the player streams a clean file,
+  /// while "Save video" hands out a stamped one. The page says which is
+  /// which twice over — in the field the address sits in, which the
+  /// extractor catalog labels, and in the address itself, which asks the CDN
+  /// for the stamp in its own query.
+  static bool _isWatermarked(String label, Uri url) =>
+      label.toLowerCase().contains('watermark') ||
+      _watermarkQuery.hasMatch(url.query);
+
+  static final RegExp _watermarkQuery = RegExp(
+    r'(?:^|&)(?:watermark=1|logo_name=)',
+    caseSensitive: false,
+  );
 
   /// The file a URL names, without the host that serves it or the signature
   /// on the request: TikTok's mirrors differ only in those.
@@ -458,10 +956,53 @@ class SocialMediaProvider implements SourceProvider {
     return [for (final result in results) result!];
   }
 
-  Future<SourceResolution> _build(_Site site, _PageWithMedia found) async {
-    final candidates = found.candidates;
+  /// Probes each soundtrack a quality ladder pairs its pictures with — once,
+  /// however many pictures share it.
+  Future<Map<Uri, MediaProbe?>> _probeSounds(
+    List<_Candidate> candidates,
+    Map<String, String> headers,
+  ) async {
+    final sounds = {for (final candidate in candidates) ?candidate.audioUrl};
+    final probes = await Future.wait(
+      sounds.map((url) => _probeQuietly(url, headers)),
+    );
+    return Map.fromIterables(sounds, probes);
+  }
+
+  /// [_fileKey], when it is specific enough to say two addresses name the
+  /// same file: TikTok names each file by a long hash, where an API address
+  /// like `/aweme/v1/play/` names only the endpoint.
+  static String? _sharedFileKey(Uri url) {
+    final key = _fileKey(url);
+    return key.length >= 16 ? key : null;
+  }
+
+  Future<SourceResolution> _build(
+    _Site site,
+    _PageWithMedia found,
+    Future<List<_Candidate>>? pendingRenditions,
+  ) async {
     final pageUrl = found.pageUrl;
     final scraped = found.scraped;
+
+    // The platform's own renditions go first, and a page address naming one
+    // of the same files is folded away rather than probed and listed a
+    // second time under a vaguer name.
+    final renditions = pendingRenditions == null
+        ? const <_Candidate>[]
+        : await pendingRenditions;
+    final published = {
+      for (final rendition in renditions)
+        for (final url in [rendition.url, ...rendition.mirrors])
+          ?_sharedFileKey(url),
+    };
+    final candidates = [
+      ...renditions,
+      for (final candidate in found.candidates)
+        if (candidate.kind != MediaType.video ||
+            !published.contains(_sharedFileKey(candidate.url)))
+          candidate,
+    ];
 
     // The file itself is fetched as a phone browser would: these CDNs check
     // where the request came from before they hand the bytes over — and
@@ -474,7 +1015,10 @@ class SocialMediaProvider implements SourceProvider {
       HttpHeaders.cookieHeader: ?cookies,
     };
 
-    final probes = await _probeAll(candidates, headers);
+    final (probes, sounds) = await (
+      _probeAll(candidates, headers),
+      _probeSounds(candidates, headers),
+    ).wait;
 
     final variants = <MediaVariant>[];
     var refusedStatus = 0;
@@ -494,6 +1038,19 @@ class SocialMediaProvider implements SourceProvider {
       }
 
       final candidate = candidates[index];
+
+      // A picture published apart from its sound is only worth listing with
+      // the soundtrack that goes with it; silent, it is not the post.
+      final soundUrl = candidate.audioUrl;
+      final sound = soundUrl == null ? null : sounds[soundUrl];
+      if (soundUrl != null && (sound == null || !sound.isSuccess)) {
+        AppLog.warn(
+          '${site.name} media probe',
+          'soundtrack refused by ${soundUrl.host}',
+        );
+        continue;
+      }
+
       // The address that answered, which may be a mirror of the first.
       final url = probes[index].url;
       final format =
@@ -520,15 +1077,44 @@ class SocialMediaProvider implements SourceProvider {
           label: candidate.label,
           format: format,
           url: url,
-          heightPx: candidate.kind == MediaType.video && candidates.length == 1
-              ? scraped.heightPx
-              : null,
+          heightPx:
+              candidate.heightPx ??
+              (candidate.kind == MediaType.video && candidates.length == 1
+                  ? scraped.heightPx
+                  : null),
           estimatedBytes: probe.totalBytes,
-          supportsResume: probe.supportsResume,
+          // Both halves of a merged download have to pick up where they
+          // stopped for the whole of it to.
+          supportsResume:
+              probe.supportsResume && (sound?.supportsResume ?? true),
           headers: headers,
+          audioUrl: soundUrl,
+          audioBytes: sound?.totalBytes,
         ),
       );
     }
+
+    // One tile per quality name. Several addresses often name the same
+    // rendition — a page files its video under more than one key, and the
+    // player API lists the file it opens on among its encodes — and where
+    // two different files share a name, the heavier is the sharper encode.
+    // The list is ranked best first, so the sheet opens on the highest
+    // quality the post has, whatever it weighs.
+    final heaviest = <String, MediaVariant>{};
+    for (final variant in variants) {
+      if (variant.mediaType != MediaType.video) continue;
+      final kept = heaviest[variant.label];
+      if (kept == null ||
+          (variant.totalEstimatedBytes ?? 0) >
+              (kept.totalEstimatedBytes ?? 0)) {
+        heaviest[variant.label] = variant;
+      }
+    }
+    variants.removeWhere(
+      (variant) =>
+          variant.mediaType == MediaType.video &&
+          !identical(heaviest[variant.label], variant),
+    );
 
     if (variants.isEmpty) {
       // The page named the file, so this is the platform's media server
@@ -708,6 +1294,10 @@ class _PageWithMedia extends _PageAttempt {
   /// The session the page handed this client, to present when fetching the
   /// media. Null when the page set no cookies.
   final String? cookieHeader;
+
+  /// Whether the page published the platform's quality ladder, not only its
+  /// single file.
+  bool get adaptive => candidates.any((candidate) => candidate.audioUrl != null);
 }
 
 class _PageRefused extends _PageAttempt {
@@ -727,7 +1317,14 @@ class _WaveResult {
 
 /// One media URL the page published, with the quality the page called it.
 class _Candidate {
-  const _Candidate(this.url, this.label, this.kind, {this.mirrors = const []});
+  const _Candidate(
+    this.url,
+    this.label,
+    this.kind, {
+    this.mirrors = const [],
+    this.heightPx,
+    this.audioUrl,
+  });
 
   final Uri url;
   final String label;
@@ -738,6 +1335,13 @@ class _Candidate {
 
   /// The same file on other hosts, to try in order when [url] is refused.
   final List<Uri> mirrors;
+
+  /// The picture's short side, when the platform said how big the file is.
+  final int? heightPx;
+
+  /// The soundtrack to merge in, for a picture published as a track of its
+  /// own — which is how a platform's highest quality usually comes.
+  final Uri? audioUrl;
 }
 
 /// One picture of a post, with the mirrors the page listed for it.
@@ -823,6 +1427,10 @@ enum _Site {
 
   /// Routes to try, best first, until one returns a page with media in it.
   final List<_Route> routes;
+
+  /// Whether some of this platform's pages publish a DASH manifest holding
+  /// renditions above the single file every page names.
+  bool get publishesAdaptiveStreams => this == _Site.instagram;
 
   /// The platform's embeddable page for [url], or null when the link is not
   /// one the embed page can be built for (or the platform has no such page).

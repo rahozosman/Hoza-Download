@@ -45,6 +45,7 @@ class AppSettings {
     this.defaultVideoFormat = MediaFormat.mp4,
     this.defaultAudioFormat = MediaFormat.m4a,
     this.qualityPreference = QualityPreference.ask,
+    this.tiktokHd = true,
     this.wifiOnly = false,
     this.autoStartDownloads = true,
     this.maxConcurrentDownloads = 2,
@@ -58,6 +59,13 @@ class AppSettings {
   final MediaFormat defaultVideoFormat;
   final MediaFormat defaultAudioFormat;
   final QualityPreference qualityPreference;
+
+  /// Look TikTok's HD file up through tikwm.com.
+  ///
+  /// TikTok itself hands a visitor without an account nothing above 576p;
+  /// tikwm.com finds the HD file TikTok keeps for the post. It sees the
+  /// TikTok links looked up while this is on, which is why it is a switch.
+  final bool tiktokHd;
 
   /// Hold downloads until the device is on Wi-Fi.
   final bool wifiOnly;
@@ -85,6 +93,7 @@ class AppSettings {
     MediaFormat? defaultVideoFormat,
     MediaFormat? defaultAudioFormat,
     QualityPreference? qualityPreference,
+    bool? tiktokHd,
     bool? wifiOnly,
     bool? autoStartDownloads,
     int? maxConcurrentDownloads,
@@ -98,6 +107,7 @@ class AppSettings {
       defaultVideoFormat: defaultVideoFormat ?? this.defaultVideoFormat,
       defaultAudioFormat: defaultAudioFormat ?? this.defaultAudioFormat,
       qualityPreference: qualityPreference ?? this.qualityPreference,
+      tiktokHd: tiktokHd ?? this.tiktokHd,
       wifiOnly: wifiOnly ?? this.wifiOnly,
       autoStartDownloads: autoStartDownloads ?? this.autoStartDownloads,
       maxConcurrentDownloads:

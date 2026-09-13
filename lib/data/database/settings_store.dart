@@ -22,6 +22,7 @@ class SettingsStore {
   static const String _defaultVideoFormat = 'default_video_format';
   static const String _defaultAudioFormat = 'default_audio_format';
   static const String _qualityPreference = 'quality_preference';
+  static const String _tiktokHd = 'tiktok_hd';
   static const String _wifiOnly = 'wifi_only';
   static const String _autoStart = 'auto_start';
   static const String _maxConcurrent = 'max_concurrent';
@@ -63,6 +64,7 @@ class SettingsStore {
       qualityPreference: values.containsKey(_qualityPreference)
           ? QualityPreference.fromStorageKey(values[_qualityPreference])
           : defaults.qualityPreference,
+      tiktokHd: _boolOr(values[_tiktokHd], defaults.tiktokHd),
       wifiOnly: _boolOr(values[_wifiOnly], defaults.wifiOnly),
       autoStartDownloads: _boolOr(
         values[_autoStart],
@@ -104,6 +106,7 @@ class SettingsStore {
     put(_defaultVideoFormat, settings.defaultVideoFormat.storageKey);
     put(_defaultAudioFormat, settings.defaultAudioFormat.storageKey);
     put(_qualityPreference, settings.qualityPreference.storageKey);
+    put(_tiktokHd, settings.tiktokHd.toString());
     put(_wifiOnly, settings.wifiOnly.toString());
     put(_autoStart, settings.autoStartDownloads.toString());
     put(_maxConcurrent, settings.maxConcurrentDownloads.toString());

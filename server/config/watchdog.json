@@ -32,14 +32,6 @@
       {
         "pattern": "\"play_addr\"\\s*:\\s*\\{[^{}]{0,400}?\"url_list\"\\s*:\\s*\\[\\s*\"([^\"]+)\"",
         "label": "Alternate"
-      },
-      {
-        "pattern": "\"downloadAddr\"\\s*:\\s*\"([^\"]+)\"",
-        "label": "With watermark"
-      },
-      {
-        "pattern": "\"download_addr\"\\s*:\\s*\\{[^{}]{0,400}?\"url_list\"\\s*:\\s*\\[\\s*\"([^\"]+)\"",
-        "label": "With watermark"
       }
     ],
     "instagram": [
